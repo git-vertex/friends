@@ -1,15 +1,89 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+let initializeApp;
+let getDatabase;
+let ref;
+let set;
+let get;
+let update;
+let onValue;
+let onDisconnect;
+let remove;
 
-import {
-    getDatabase,
-    ref,
-    set,
-    get,
-    update,
-    onValue,
-    onDisconnect,
-    remove
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+let db = null;
+let firebaseReady = false;
+
+async function loadFirebase() {
+    try {
+        const firebaseApp =
+            await import(
+                "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js"
+            );
+
+        const firebaseDatabase =
+            await import(
+                "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js"
+            );
+
+        initializeApp =
+            firebaseApp.initializeApp;
+
+        getDatabase =
+            firebaseDatabase.getDatabase;
+
+        ref =
+            firebaseDatabase.ref;
+
+        set =
+            firebaseDatabase.set;
+
+        get =
+            firebaseDatabase.get;
+
+        update =
+            firebaseDatabase.update;
+
+        onValue =
+            firebaseDatabase.onValue;
+
+        onDisconnect =
+            firebaseDatabase.onDisconnect;
+
+        remove =
+            firebaseDatabase.remove;
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyA2wzPsyM6XBfbOxUP7JdCrWDyDmB8os",
+            authDomain: "friends-66f85.firebaseapp.com",
+            databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
+            projectId: "friends-66f85",
+            storageBucket: "friends-66f85.firebasestorage.app",
+            messagingSenderId: "841738224372",
+            appId: "1:841738224372:web:92954bc9f16d69b176d4a1"
+        };
+
+        const app =
+            initializeApp(firebaseConfig);
+
+        db =
+            getDatabase(app);
+
+        firebaseReady = true;
+
+        console.log(
+            "Firebase connected"
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Firebase loading error:",
+            error
+        );
+
+        setLobbyStatus(
+            "Firebase не загрузился. BOT всё равно доступен."
+        );
+    }
+}
 
 const firebaseConfig = {
     apiKey: "AIzaSyA2wzPsy6M1XBfbOxUP7JdCrWDyDmB8os",
@@ -126,6 +200,43 @@ const remote = {
     hurt: 0,
     recoil: 0
 };
+
+playBotButton.addEventListener(
+    "click",
+    () => {
+        startBot();
+    }
+);
+
+createRoomButton.addEventListener(
+    "click",
+    () => {
+        if (!firebaseReady) {
+            setLobbyStatus(
+                "Firebase ещё загружается..."
+            );
+            return;
+        }
+
+        createRoom();
+    }
+);
+
+joinRoomButton.addEventListener(
+    "click",
+    () => {
+        if (!firebaseReady) {
+            setLobbyStatus(
+                "Firebase ещё загружается..."
+            );
+            return;
+        }
+
+        joinRoom();
+    }
+);
+
+loadFirebase();
 
 function clamp(v, min, max) {
     return Math.max(
@@ -3124,21 +3235,6 @@ function frame(now) {
         frame
     );
 }
-
-createRoomButton.addEventListener(
-    "click",
-    createRoom
-);
-
-joinRoomButton.addEventListener(
-    "click",
-    joinRoom
-);
-
-playBotButton.addEventListener(
-    "click",
-    startBot
-);
 
 joinCodeInput.addEventListener(
     "input",
