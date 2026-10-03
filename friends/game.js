@@ -3,15 +3,11 @@ import {
     onValue,
     update,
     push,
-    onChildAdded,
-    remove
+    onChildAdded
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
 
-
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d", {
-    alpha: false
-});
+const ctx = canvas.getContext("2d", { alpha: false });
 
 const timeEl = document.getElementById("time");
 const statusEl = document.getElementById("status");
@@ -23,23 +19,19 @@ const backToMenu = document.getElementById("backToMenu");
 
 const p1HpText = document.getElementById("p1HpText");
 const p2HpText = document.getElementById("p2HpText");
-
 const p1Health = document.getElementById("p1Health");
 const p2Health = document.getElementById("p2Health");
-
 
 const W = canvas.width;
 const H = canvas.height;
 
-const keys = new Set();
+const keys = Object.create(null);
 
 const mouse = {
-    x: W / 2,
-    y: H / 2,
-    down: false,
-    rightDown: false
+    x: W * 0.5,
+    y: H * 0.5,
+    down: false
 };
-
 
 let roomId = null;
 let playerId = null;
@@ -49,18 +41,16 @@ let db = null;
 let started = false;
 let gameOver = false;
 
-let lastFrame = performance.now();
+let lastTime = performance.now();
 
-let roomUnsubscribe = null;
 let opponentUnsubscribe = null;
+let roomUnsubscribe = null;
 let shotUnsubscribe = null;
 
-let networkTimer = 0;
-let shotTimer = 0;
-let hookTimer = 0;
+let networkAccumulator = 0;
+let timerAccumulator = 0;
 
-let gameStartTime = 0;
-let remoteGameStartTime = 0;
+let startTime = 0;
 
 let localPlayer = null;
 let opponent = null;
@@ -68,18 +58,12 @@ let opponent = null;
 let bullets = [];
 let particles = [];
 
-let remoteBullets = [];
-
-let pendingDamage = 0;
-
-let lastSentX = 0;
-let lastSentY = 0;
-let lastSentAngle = 0;
-let lastSentHp = 100;
-
-let lastRemoteX = 0;
-let lastRemoteY = 0;
-let lastRemoteAngle = 0;
+let lastSent = {
+    x: 0,
+    y: 0,
+    angle: 0,
+    hp: 100
+};
 
 let opponentTarget = {
     x: 0,
@@ -88,31 +72,31 @@ let opponentTarget = {
     hp: 100
 };
 
+let fireTimer = 0;
+let hookTimer = 0;
+let finishSent = false;
 
-const PLAYER_SPEED = 280;
-const BULLET_SPEED = 820;
-const FIRE_COOLDOWN = 700;
-const HOOK_COOLDOWN = 2000;
-
-const NETWORK_RATE = 1 / 15;
-
+const PLAYER_SPEED = 300;
+const BULLET_SPEED = 900;
+const FIRE_DELAY = 0.12;
+const HOOK_DELAY = 2.0;
+const HOOK_SPEED = 850;
+const NETWORK_INTERVAL = 0.10;
 const ROUND_TIME = 30;
 
-
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
 }
 
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
 
 function normalize(x, y) {
-
     const length = Math.hypot(x, y);
 
-    if (length <= 0.0001) {
-        return {
-            x: 0,
-            y: 0
-        };
+    if (length < 0.0001) {
+        return { x: 0, y: 0 };
     }
 
     return {
@@ -121,532 +105,310 @@ function normalize(x, y) {
     };
 }
 
-
-function lerp(a, b, t) {
-    return a + (b - a) * t;
-}
-
-
 function angleLerp(a, b, t) {
+    let d = b - a;
 
-    let difference =
-        ((b - a + Math.PI) %
-            (Math.PI * 2)) -
-        Math.PI;
+    while (d > Math.PI) {
+        d -= Math.PI * 2;
+    }
 
-    return a + difference * t;
+    while (d < -Math.PI) {
+        d += Math.PI * 2;
+    }
+
+    return a + d * t;
 }
-
 
 function createPlayer(x, y, color) {
-
     return {
-
         x,
         y,
-
         vx: 0,
         vy: 0,
-
-        radius: 16,
-
-        speed: PLAYER_SPEED,
-
-        hp: 100,
-        maxHp: 100,
-
-        color,
-
         angle: 0,
-
-        fireCooldown: FIRE_COOLDOWN,
-
-        hookCooldown: HOOK_COOLDOWN,
-
+        radius: 16,
+        hp: 100,
+        color,
         hook: {
             active: false,
-            x,
-            y,
-            life: 0,
-            maxLife: .62
+            x: x,
+            y: y,
+            life: 0
         }
-
     };
 }
 
-
 function resetGame() {
-
-    bullets = [];
-    particles = [];
-    remoteBullets = [];
-
-    pendingDamage = 0;
+    bullets.length = 0;
+    particles.length = 0;
 
     localPlayer = createPlayer(
         isHost ? 130 : W - 130,
-        H / 2,
+        H * 0.5,
         "#67a7ff"
     );
 
     opponent = createPlayer(
         isHost ? W - 130 : 130,
-        H / 2,
+        H * 0.5,
         "#ff6d7f"
     );
 
-    localPlayer.angle =
-        isHost ? 0 : Math.PI;
-
-    opponent.angle =
-        isHost ? Math.PI : 0;
+    localPlayer.angle = isHost ? 0 : Math.PI;
+    opponent.angle = isHost ? Math.PI : 0;
 
     opponentTarget.x = opponent.x;
     opponentTarget.y = opponent.y;
     opponentTarget.angle = opponent.angle;
     opponentTarget.hp = 100;
 
-    lastSentX = localPlayer.x;
-    lastSentY = localPlayer.y;
-    lastSentAngle = localPlayer.angle;
-    lastSentHp = 100;
+    lastSent.x = localPlayer.x;
+    lastSent.y = localPlayer.y;
+    lastSent.angle = localPlayer.angle;
+    lastSent.hp = 100;
 
-    lastRemoteX = opponent.x;
-    lastRemoteY = opponent.y;
-    lastRemoteAngle = opponent.angle;
-
+    fireTimer = 0;
+    hookTimer = 0;
+    finishSent = false;
     gameOver = false;
 
     overlay.classList.remove("show");
 
-    statusEl.textContent =
-        isHost ? "HOST" : "PLAYER 2";
+    statusEl.textContent = isHost ? "HOST" : "PLAYER 2";
 
     updateHud();
 }
 
+function updateMousePosition(e) {
+    const rect = canvas.getBoundingClientRect();
 
-function canvasPoint(event) {
+    mouse.x =
+        (e.clientX - rect.left) *
+        (W / rect.width);
 
-    const rect =
-        canvas.getBoundingClientRect();
-
-    return {
-
-        x:
-            (event.clientX - rect.left) *
-            W / rect.width,
-
-        y:
-            (event.clientY - rect.top) *
-            H / rect.height
-
-    };
+    mouse.y =
+        (e.clientY - rect.top) *
+        (H / rect.height);
 }
 
-
 function updateAim() {
-
     if (!localPlayer) {
         return;
     }
 
-    localPlayer.angle =
-        Math.atan2(
-            mouse.y - localPlayer.y,
-            mouse.x - localPlayer.x
-        );
+    localPlayer.angle = Math.atan2(
+        mouse.y - localPlayer.y,
+        mouse.x - localPlayer.x
+    );
 }
 
-
 function updateMovement(dt) {
-
     if (!localPlayer || gameOver) {
         return;
     }
 
+    let x = 0;
+    let y = 0;
 
-    let moveX = 0;
-    let moveY = 0;
-
-
-    if (
-        keys.has("w") ||
-        keys.has("arrowup")
-    ) {
-        moveY -= 1;
+    if (keys.w || keys.arrowup) {
+        y -= 1;
     }
 
-    if (
-        keys.has("s") ||
-        keys.has("arrowdown")
-    ) {
-        moveY += 1;
+    if (keys.s || keys.arrowdown) {
+        y += 1;
     }
 
-    if (
-        keys.has("a") ||
-        keys.has("arrowleft")
-    ) {
-        moveX -= 1;
+    if (keys.a || keys.arrowleft) {
+        x -= 1;
     }
 
-    if (
-        keys.has("d") ||
-        keys.has("arrowright")
-    ) {
-        moveX += 1;
+    if (keys.d || keys.arrowright) {
+        x += 1;
     }
 
+    const dir = normalize(x, y);
 
-    const direction =
-        normalize(
-            moveX,
-            moveY
-        );
+    localPlayer.vx = dir.x * PLAYER_SPEED;
+    localPlayer.vy = dir.y * PLAYER_SPEED;
 
+    localPlayer.x += localPlayer.vx * dt;
+    localPlayer.y += localPlayer.vy * dt;
 
-    localPlayer.vx =
-        direction.x *
-        localPlayer.speed;
+    if (localPlayer.hook.active) {
+        const dx = localPlayer.hook.x - localPlayer.x;
+        const dy = localPlayer.hook.y - localPlayer.y;
 
-    localPlayer.vy =
-        direction.y *
-        localPlayer.speed;
+        const dist = Math.hypot(dx, dy);
 
-
-    localPlayer.x +=
-        localPlayer.vx *
-        dt;
-
-    localPlayer.y +=
-        localPlayer.vy *
-        dt;
-
-
-    if (
-        localPlayer.hook.active
-    ) {
-
-        const dx =
-            localPlayer.hook.x -
-            localPlayer.x;
-
-        const dy =
-            localPlayer.hook.y -
-            localPlayer.y;
-
-        const distance =
-            Math.hypot(dx, dy);
-
-
-        if (distance > 15) {
-
-            const hookDirection =
-                normalize(
-                    dx,
-                    dy
-                );
-
-            const pull =
-                650 *
-                dt;
-
-            localPlayer.x +=
-                hookDirection.x *
-                pull;
-
-            localPlayer.y +=
-                hookDirection.y *
-                pull;
-
+        if (dist < 18) {
+            localPlayer.hook.active = false;
         } else {
+            const d = normalize(dx, dy);
 
-            localPlayer.hook.active =
-                false;
-
+            localPlayer.x += d.x * HOOK_SPEED * dt;
+            localPlayer.y += d.y * HOOK_SPEED * dt;
         }
-
     }
 
+    localPlayer.x = clamp(
+        localPlayer.x,
+        localPlayer.radius,
+        W - localPlayer.radius
+    );
 
-    localPlayer.x =
-        clamp(
-            localPlayer.x,
-            localPlayer.radius,
-            W - localPlayer.radius
-        );
-
-    localPlayer.y =
-        clamp(
-            localPlayer.y,
-            localPlayer.radius,
-            H - localPlayer.radius
-        );
-
+    localPlayer.y = clamp(
+        localPlayer.y,
+        localPlayer.radius,
+        H - localPlayer.radius
+    );
 }
 
-
 function shoot() {
-
-    if (
-        !started ||
-        gameOver ||
-        !localPlayer
-    ) {
+    if (!started || gameOver || !localPlayer) {
         return;
     }
 
-
-    const now =
-        performance.now();
-
-
-    if (
-        now - shotTimer <
-        localPlayer.fireCooldown
-    ) {
+    if (fireTimer > 0) {
         return;
     }
 
+    fireTimer = FIRE_DELAY;
 
-    shotTimer = now;
+    const dx = Math.cos(localPlayer.angle);
+    const dy = Math.sin(localPlayer.angle);
 
-
-    const dx =
-        Math.cos(localPlayer.angle);
-
-    const dy =
-        Math.sin(localPlayer.angle);
-
-
-    const startX =
+    const x =
         localPlayer.x +
         dx *
         (localPlayer.radius + 7);
 
-    const startY =
+    const y =
         localPlayer.y +
         dy *
         (localPlayer.radius + 7);
 
-
     bullets.push({
-
-        x: startX,
-
-        y: startY,
-
+        x,
+        y,
         vx: dx * BULLET_SPEED,
-
         vy: dy * BULLET_SPEED,
-
-        life: 1.15,
-
-        owner: playerId,
-
-        color: "#ffffff"
-
+        life: 1,
+        owner: playerId
     });
 
+    createParticles(x, y, "#ffffff", 3);
 
-    createParticles(
-        startX,
-        startY,
-        "#ffffff",
-        4
-    );
-
-
-    sendShot(
-        startX,
-        startY,
-        dx,
-        dy
-    );
-
+    sendShot(x, y, dx, dy);
 }
 
-
-async function sendShot(
-    x,
-    y,
-    dx,
-    dy
-) {
-
-    if (
-        !roomId ||
-        !db ||
-        !playerId
-    ) {
-        return;
+function updateShooting(dt) {
+    if (fireTimer > 0) {
+        fireTimer -= dt;
     }
 
+    if (mouse.down) {
+        shoot();
+    }
+}
+
+async function sendShot(x, y, dx, dy) {
+    if (!db || !roomId || !playerId) {
+        return;
+    }
 
     try {
-
         await push(
-            ref(
-                db,
-                `rooms/${roomId}/shots`
-            ),
+            ref(db, `rooms/${roomId}/shots`),
             {
-
                 owner: playerId,
-
                 x,
                 y,
-
                 dx,
                 dy,
-
-                timestamp: Date.now()
-
+                t: Date.now()
             }
         );
-
-    } catch (error) {
-
-        console.error(
-            "Shot:",
-            error
-        );
-
-    }
-
+    } catch {}
 }
 
-
 function launchHook() {
-
-    if (
-        !localPlayer ||
-        gameOver
-    ) {
+    if (!localPlayer || gameOver) {
         return;
     }
 
-
-    const now =
-        performance.now();
-
-
-    if (
-        now - hookTimer <
-        HOOK_COOLDOWN
-    ) {
+    if (hookTimer > 0) {
         return;
     }
 
+    hookTimer = HOOK_DELAY;
 
-    hookTimer = now;
+    const dir = normalize(
+        mouse.x - localPlayer.x,
+        mouse.y - localPlayer.y
+    );
 
+    let distance = 400;
 
-    const direction =
-        normalize(
-            mouse.x - localPlayer.x,
-            mouse.y - localPlayer.y
+    if (dir.x > 0) {
+        distance = Math.min(
+            distance,
+            (W - localPlayer.x) / dir.x
         );
-
-
-    let maxDistance = 400;
-
-
-    if (direction.x > 0) {
-
-        maxDistance =
-            Math.min(
-                maxDistance,
-                (W - localPlayer.x) /
-                direction.x
-            );
-
-    } else if (direction.x < 0) {
-
-        maxDistance =
-            Math.min(
-                maxDistance,
-                -localPlayer.x /
-                direction.x
-            );
-
     }
 
-
-    if (direction.y > 0) {
-
-        maxDistance =
-            Math.min(
-                maxDistance,
-                (H - localPlayer.y) /
-                direction.y
-            );
-
-    } else if (direction.y < 0) {
-
-        maxDistance =
-            Math.min(
-                maxDistance,
-                -localPlayer.y /
-                direction.y
-            );
-
+    if (dir.x < 0) {
+        distance = Math.min(
+            distance,
+            -localPlayer.x / dir.x
+        );
     }
 
-
-    maxDistance =
-        clamp(
-            maxDistance,
-            70,
-            400
+    if (dir.y > 0) {
+        distance = Math.min(
+            distance,
+            (H - localPlayer.y) / dir.y
         );
+    }
 
+    if (dir.y < 0) {
+        distance = Math.min(
+            distance,
+            -localPlayer.y / dir.y
+        );
+    }
 
-    localPlayer.hook.active =
-        true;
+    distance = clamp(distance, 80, 400);
+
+    localPlayer.hook.active = true;
 
     localPlayer.hook.x =
         localPlayer.x +
-        direction.x *
-        maxDistance;
+        dir.x *
+        distance;
 
     localPlayer.hook.y =
         localPlayer.y +
-        direction.y *
-        maxDistance;
+        dir.y *
+        distance;
 
-    localPlayer.hook.life =
-        localPlayer.hook.maxLife;
-
+    localPlayer.hook.life = 0.5;
 }
 
-
 function updateHook(dt) {
+    if (hookTimer > 0) {
+        hookTimer -= dt;
+    }
 
-    if (
-        !localPlayer ||
-        !localPlayer.hook.active
-    ) {
+    if (!localPlayer || !localPlayer.hook.active) {
         return;
     }
 
+    localPlayer.hook.life -= dt;
 
-    localPlayer.hook.life -=
-        dt;
-
-
-    if (
-        localPlayer.hook.life <= 0
-    ) {
-
-        localPlayer.hook.active =
-            false;
-
+    if (localPlayer.hook.life <= 0) {
+        localPlayer.hook.active = false;
         return;
-
     }
-
 
     const dx =
         localPlayer.hook.x -
@@ -656,277 +418,289 @@ function updateHook(dt) {
         localPlayer.hook.y -
         localPlayer.y;
 
+    const dist = Math.hypot(dx, dy);
 
-    const distance =
-        Math.hypot(
-            dx,
-            dy
-        );
-
-
-    if (distance < 18) {
-
-        localPlayer.hook.active =
-            false;
-
-        return;
-
-    }
-
-
-    const direction =
-        normalize(
-            dx,
-            dy
-        );
-
-
-    const hookSpeed = 620;
-
-
-    localPlayer.x +=
-        direction.x *
-        hookSpeed *
-        dt;
-
-    localPlayer.y +=
-        direction.y *
-        hookSpeed *
-        dt;
-
-
-    localPlayer.x =
-        clamp(
-            localPlayer.x,
-            localPlayer.radius,
-            W - localPlayer.radius
-        );
-
-    localPlayer.y =
-        clamp(
-            localPlayer.y,
-            localPlayer.radius,
-            H - localPlayer.radius
-        );
-
-}
-
-
-function updateBullets(dt) {
-
-    for (
-        let i = bullets.length - 1;
-        i >= 0;
-        i--
-    ) {
-
-        const bullet =
-            bullets[i];
-
-
-        bullet.x +=
-            bullet.vx *
-            dt;
-
-        bullet.y +=
-            bullet.vy *
-            dt;
-
-        bullet.life -=
-            dt;
-
-
-        if (
-            bullet.life <= 0 ||
-            bullet.x < -30 ||
-            bullet.x > W + 30 ||
-            bullet.y < -30 ||
-            bullet.y > H + 30
-        ) {
-
-            bullets.splice(i, 1);
-
-            continue;
-
-        }
-
-
-        if (
-            bullet.owner !== playerId &&
-            localPlayer
-        ) {
-
-            const distance =
-                Math.hypot(
-                    bullet.x -
-                    localPlayer.x,
-
-                    bullet.y -
-                    localPlayer.y
-                );
-
-
-            if (
-                distance <
-                localPlayer.radius + 4
-            ) {
-
-                bullets.splice(i, 1);
-
-                applyDamage(
-                    10
-                );
-
-            }
-
-        }
-
-    }
-
-
-    for (
-        let i = remoteBullets.length - 1;
-        i >= 0;
-        i--
-    ) {
-
-        const bullet =
-            remoteBullets[i];
-
-
-        bullet.x +=
-            bullet.vx *
-            dt;
-
-        bullet.y +=
-            bullet.vy *
-            dt;
-
-        bullet.life -=
-            dt;
-
-
-        if (
-            bullet.life <= 0
-        ) {
-
-            remoteBullets.splice(i, 1);
-
-        }
-
-    }
-
-}
-
-
-function applyDamage(amount) {
-
-    if (
-        !localPlayer ||
-        gameOver
-    ) {
+    if (dist < 18) {
+        localPlayer.hook.active = false;
         return;
     }
 
+    const dir = normalize(dx, dy);
 
-    localPlayer.hp =
-        clamp(
-            localPlayer.hp -
-            amount,
-            0,
-            100
-        );
+    localPlayer.x += dir.x * HOOK_SPEED * dt;
+    localPlayer.y += dir.y * HOOK_SPEED * dt;
 
-
-    pendingDamage +=
-        amount;
-
-
-    createParticles(
+    localPlayer.x = clamp(
         localPlayer.x,
-        localPlayer.y,
-        "#ff6d7f",
-        10
+        localPlayer.radius,
+        W - localPlayer.radius
     );
 
-
-    updateHud();
-
-
-    if (
-        localPlayer.hp <= 0
-    ) {
-
-        localPlayer.hp = 0;
-
-        sendLocalState(true);
-
-        finishDeath();
-
-    }
-
+    localPlayer.y = clamp(
+        localPlayer.y,
+        localPlayer.radius,
+        H - localPlayer.radius
+    );
 }
 
+function updateBullets(dt) {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
 
-async function finishDeath() {
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.life -= dt;
 
-    if (gameOver) {
+        if (
+            b.life <= 0 ||
+            b.x < -50 ||
+            b.x > W + 50 ||
+            b.y < -50 ||
+            b.y > H + 50
+        ) {
+            bullets.splice(i, 1);
+            continue;
+        }
+    }
+}
+
+function createParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 30 + Math.random() * 120;
+
+        particles.push({
+            x,
+            y,
+            vx: Math.cos(a) * s,
+            vy: Math.sin(a) * s,
+            life: 0.25 + Math.random() * 0.2,
+            color
+        });
+    }
+}
+
+function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+
+        p.vx *= Math.pow(0.01, dt);
+        p.vy *= Math.pow(0.01, dt);
+
+        p.life -= dt;
+
+        if (p.life <= 0) {
+            particles.splice(i, 1);
+        }
+    }
+}
+
+function updateOpponent(dt) {
+    if (!opponent) {
         return;
     }
 
+    const distance = Math.hypot(
+        opponentTarget.x - opponent.x,
+        opponentTarget.y - opponent.y
+    );
 
-    gameOver = true;
+    if (distance > 200) {
+        opponent.x = opponentTarget.x;
+        opponent.y = opponentTarget.y;
+    } else {
+        const t = 1 - Math.pow(0.00001, dt);
 
+        opponent.x = lerp(
+            opponent.x,
+            opponentTarget.x,
+            t
+        );
 
-    if (!isHost) {
+        opponent.y = lerp(
+            opponent.y,
+            opponentTarget.y,
+            t
+        );
+    }
+
+    opponent.angle = angleLerp(
+        opponent.angle,
+        opponentTarget.angle,
+        Math.min(1, dt * 15)
+    );
+
+    opponent.hp = lerp(
+        opponent.hp,
+        opponentTarget.hp,
+        Math.min(1, dt * 15)
+    );
+}
+
+function updateHud() {
+    if (!localPlayer || !opponent) {
         return;
     }
 
+    const hp1 = clamp(localPlayer.hp, 0, 100);
+    const hp2 = clamp(opponent.hp, 0, 100);
 
-    const winner =
-        "player1";
+    p1HpText.textContent = Math.ceil(hp1);
+    p2HpText.textContent = Math.ceil(hp2);
 
+    p1Health.style.width = hp1 + "%";
+    p2Health.style.width = hp2 + "%";
+}
+
+function getTimeLeft() {
+    if (!startTime) {
+        return ROUND_TIME;
+    }
+
+    return clamp(
+        ROUND_TIME -
+        (Date.now() - startTime) / 1000,
+        0,
+        ROUND_TIME
+    );
+}
+
+function updateTimer(dt) {
+    timerAccumulator += dt;
+
+    if (timerAccumulator < 0.05) {
+        return;
+    }
+
+    timerAccumulator = 0;
+
+    const time = getTimeLeft();
+
+    timeEl.textContent = time.toFixed(1);
+
+    if (time <= 5) {
+        timeEl.style.color = "#ff6d7f";
+    } else {
+        timeEl.style.color = "";
+    }
+
+    if (
+        isHost &&
+        time <= 0 &&
+        !finishSent
+    ) {
+        finishRound();
+    }
+}
+
+async function finishRound() {
+    if (
+        finishSent ||
+        !isHost ||
+        !db ||
+        !roomId
+    ) {
+        return;
+    }
+
+    finishSent = true;
+
+    let winner = null;
+
+    if (localPlayer.hp > opponentTarget.hp) {
+        winner = "player1";
+    } else if (opponentTarget.hp > localPlayer.hp) {
+        winner = "player2";
+    }
 
     try {
+        await update(
+            ref(db, `rooms/${roomId}/game`),
+            {
+                status: "finished",
+                winner,
+                time: 0,
+                finishedAt: Date.now()
+            }
+        );
+    } catch {}
+}
 
+async function sendPlayerState(force = false) {
+    if (
+        !db ||
+        !roomId ||
+        !localPlayer
+    ) {
+        return;
+    }
+
+    const dx = localPlayer.x - lastSent.x;
+    const dy = localPlayer.y - lastSent.y;
+    const da = Math.abs(
+        localPlayer.angle -
+        lastSent.angle
+    );
+
+    if (
+        !force &&
+        Math.abs(dx) < 2 &&
+        Math.abs(dy) < 2 &&
+        da < 0.02 &&
+        localPlayer.hp === lastSent.hp
+    ) {
+        return;
+    }
+
+    const path =
+        isHost
+            ? "player1"
+            : "player2";
+
+    lastSent.x = localPlayer.x;
+    lastSent.y = localPlayer.y;
+    lastSent.angle = localPlayer.angle;
+    lastSent.hp = localPlayer.hp;
+
+    const data = {
+        x: Math.round(localPlayer.x * 10) / 10,
+        y: Math.round(localPlayer.y * 10) / 10,
+        angle: localPlayer.angle,
+        hp: localPlayer.hp,
+        t: Date.now()
+    };
+
+    try {
         await update(
             ref(
                 db,
-                `rooms/${roomId}/game`
+                `rooms/${roomId}/players/${path}`
             ),
-            {
-
-                status: "finished",
-
-                winner,
-
-                time: 0,
-
-                finishedAt: Date.now()
-
-            }
+            data
         );
-
-    } catch (error) {
-
-        console.error(
-            error
-        );
-
-    }
-
+    } catch {}
 }
 
+function updateNetwork(dt) {
+    networkAccumulator += dt;
+
+    if (networkAccumulator >= NETWORK_INTERVAL) {
+        networkAccumulator -= NETWORK_INTERVAL;
+        sendPlayerState();
+    }
+}
 
 function processRemoteShot(shot) {
-
     if (
         !localPlayer ||
-        gameOver
+        gameOver ||
+        shot.owner === playerId
     ) {
         return;
     }
-
 
     const dx =
         localPlayer.x -
@@ -936,11 +710,9 @@ function processRemoteShot(shot) {
         localPlayer.y -
         shot.y;
 
-
     const projection =
         dx * shot.dx +
         dy * shot.dy;
-
 
     if (
         projection < 0 ||
@@ -948,7 +720,6 @@ function processRemoteShot(shot) {
     ) {
         return;
     }
-
 
     const closestX =
         shot.x +
@@ -960,829 +731,245 @@ function processRemoteShot(shot) {
         shot.dy *
         projection;
 
-
-    const distance =
-        Math.hypot(
-            localPlayer.x -
-            closestX,
-
-            localPlayer.y -
-            closestY
-        );
-
+    const distance = Math.hypot(
+        localPlayer.x - closestX,
+        localPlayer.y - closestY
+    );
 
     if (
         distance <=
         localPlayer.radius + 5
     ) {
-
-        applyDamage(10);
-
-    }
-
-
-    createParticles(
-        closestX,
-        closestY,
-        "#ffffff",
-        3
-    );
-
-}
-
-
-function createParticles(
-    x,
-    y,
-    color,
-    count
-) {
-
-    for (
-        let i = 0;
-        i < count;
-        i++
-    ) {
-
-        const angle =
-            Math.random() *
-            Math.PI *
-            2;
-
-        const speed =
-            30 +
-            Math.random() *
-            140;
-
-
-        particles.push({
-
-            x,
-            y,
-
-            vx:
-                Math.cos(angle) *
-                speed,
-
-            vy:
-                Math.sin(angle) *
-                speed,
-
-            life:
-                .2 +
-                Math.random() *
-                .35,
-
-            maxLife: .55,
-
-            color
-
-        });
-
-    }
-
-}
-
-
-function updateParticles(dt) {
-
-    for (
-        let i = particles.length - 1;
-        i >= 0;
-        i--
-    ) {
-
-        const p =
-            particles[i];
-
-
-        p.x +=
-            p.vx *
-            dt;
-
-        p.y +=
-            p.vy *
-            dt;
-
-
-        p.vx *=
-            Math.pow(
-                .02,
-                dt
-            );
-
-        p.vy *=
-            Math.pow(
-                .02,
-                dt
-            );
-
-
-        p.life -=
-            dt;
-
-
-        if (
-            p.life <= 0
-        ) {
-
-            particles.splice(
-                i,
-                1
-            );
-
-        }
-
-    }
-
-}
-
-
-async function sendLocalState(
-    force = false
-) {
-
-    if (
-        !roomId ||
-        !db ||
-        !localPlayer
-    ) {
-        return;
-    }
-
-
-    const dx =
-        localPlayer.x -
-        lastSentX;
-
-    const dy =
-        localPlayer.y -
-        lastSentY;
-
-    const da =
-        Math.abs(
-            localPlayer.angle -
-            lastSentAngle
+        localPlayer.hp = clamp(
+            localPlayer.hp - 10,
+            0,
+            100
         );
 
+        createParticles(
+            localPlayer.x,
+            localPlayer.y,
+            "#ff6d7f",
+            8
+        );
 
-    const changed =
-        force ||
-        Math.abs(dx) > 2 ||
-        Math.abs(dy) > 2 ||
-        da > .025 ||
-        localPlayer.hp !==
-            lastSentHp;
+        updateHud();
 
+        sendPlayerState(true);
 
-    if (!changed) {
+        if (localPlayer.hp <= 0) {
+            localPlayer.hp = 0;
+            finishDeath();
+        }
+    }
+}
+
+async function finishDeath() {
+    if (
+        gameOver ||
+        !isHost ||
+        !db ||
+        !roomId
+    ) {
         return;
     }
 
-
-    const path =
-        isHost
-            ? "player1"
-            : "player2";
-
-
-    lastSentX =
-        localPlayer.x;
-
-    lastSentY =
-        localPlayer.y;
-
-    lastSentAngle =
-        localPlayer.angle;
-
-    lastSentHp =
-        localPlayer.hp;
-
+    gameOver = true;
 
     try {
-
         await update(
-            ref(
-                db,
-                `rooms/${roomId}/players/${path}`
-            ),
+            ref(db, `rooms/${roomId}/game`),
             {
-
-                x:
-                    Math.round(
-                        localPlayer.x *
-                        10
-                    ) / 10,
-
-                y:
-                    Math.round(
-                        localPlayer.y *
-                        10
-                    ) / 10,
-
-                angle:
-                    localPlayer.angle,
-
-                hp:
-                    localPlayer.hp,
-
-                timestamp:
-                    Date.now()
-
+                status: "finished",
+                winner: "player1",
+                time: 0,
+                finishedAt: Date.now()
             }
         );
-
-    } catch (error) {
-
-        console.error(
-            "Network:",
-            error
-        );
-
-    }
-
+    } catch {}
 }
-
-
-function updateOpponent(data) {
-
-    if (
-        !data ||
-        !opponent
-    ) {
-        return;
-    }
-
-
-    opponentTarget.x =
-        Number(data.x) ||
-        opponentTarget.x;
-
-    opponentTarget.y =
-        Number(data.y) ||
-        opponentTarget.y;
-
-    opponentTarget.angle =
-        Number(data.angle) ||
-        opponentTarget.angle;
-
-    opponentTarget.hp =
-        typeof data.hp === "number"
-            ? data.hp
-            : opponentTarget.hp;
-
-
-    if (
-        Math.abs(
-            opponentTarget.x -
-            opponent.x
-        ) > 180 ||
-        Math.abs(
-            opponentTarget.y -
-            opponent.y
-        ) > 180
-    ) {
-
-        opponent.x =
-            opponentTarget.x;
-
-        opponent.y =
-            opponentTarget.y;
-
-    }
-
-
-    lastRemoteX =
-        opponentTarget.x;
-
-    lastRemoteY =
-        opponentTarget.y;
-
-    lastRemoteAngle =
-        opponentTarget.angle;
-
-}
-
-
-function interpolateOpponent(dt) {
-
-    if (!opponent) {
-        return;
-    }
-
-
-    const smooth =
-        1 -
-        Math.pow(
-            .0001,
-            dt
-        );
-
-
-    opponent.x =
-        lerp(
-            opponent.x,
-            opponentTarget.x,
-            smooth
-        );
-
-    opponent.y =
-        lerp(
-            opponent.y,
-            opponentTarget.y,
-            smooth
-        );
-
-    opponent.angle =
-        angleLerp(
-            opponent.angle,
-            opponentTarget.angle,
-            smooth
-        );
-
-    opponent.hp =
-        lerp(
-            opponent.hp,
-            opponentTarget.hp,
-            Math.min(
-                1,
-                dt * 12
-            )
-        );
-
-}
-
 
 function setupFirebase() {
-
-    if (
-        !roomId ||
-        !db
-    ) {
+    if (!db || !roomId) {
         return;
     }
 
-
-    const opponentPath =
+    const enemy =
         isHost
             ? "player2"
             : "player1";
 
+    opponentUnsubscribe = onValue(
+        ref(
+            db,
+            `rooms/${roomId}/players/${enemy}`
+        ),
+        snapshot => {
+            const data = snapshot.val();
 
-    opponentUnsubscribe =
-        onValue(
-            ref(
-                db,
-                `rooms/${roomId}/players/${opponentPath}`
-            ),
-            snapshot => {
-
-                if (
-                    snapshot.exists()
-                ) {
-
-                    updateOpponent(
-                        snapshot.val()
-                    );
-
-                }
-
+            if (!data) {
+                return;
             }
-        );
 
-
-    roomUnsubscribe =
-        onValue(
-            ref(
-                db,
-                `rooms/${roomId}`
-            ),
-            snapshot => {
-
-                if (
-                    !snapshot.exists()
-                ) {
-
-                    showGameResult(
-                        "SERVER CLOSED",
-                        "The server was closed."
-                    );
-
-                    return;
-
-                }
-
-
-                const room =
-                    snapshot.val();
-
-
-                if (
-                    room.status ===
-                    "playing"
-                ) {
-
-                    if (
-                        room.startedAt &&
-                        !remoteGameStartTime
-                    ) {
-
-                        remoteGameStartTime =
-                            room.startedAt;
-
-                        if (!gameStartTime) {
-                            gameStartTime =
-                                room.startedAt;
-                        }
-
-                    }
-
-                    statusEl.textContent =
-                        "FIGHT";
-
-                }
-
-
-                const game =
-                    room.game;
-
-
-                if (
-                    game &&
-                    game.status ===
-                    "finished"
-                ) {
-
-                    finishFromFirebase(
-                        game.winner
-                    );
-
-                }
-
+            if (typeof data.x === "number") {
+                opponentTarget.x = data.x;
             }
-        );
 
+            if (typeof data.y === "number") {
+                opponentTarget.y = data.y;
+            }
 
-    shotUnsubscribe =
-        onChildAdded(
-            ref(
-                db,
-                `rooms/${roomId}/shots`
-            ),
-            snapshot => {
+            if (typeof data.angle === "number") {
+                opponentTarget.angle = data.angle;
+            }
 
-                const shot =
-                    snapshot.val();
+            if (typeof data.hp === "number") {
+                opponentTarget.hp = data.hp;
+            }
+        }
+    );
 
+    roomUnsubscribe = onValue(
+        ref(db, `rooms/${roomId}`),
+        snapshot => {
+            const room = snapshot.val();
 
-                if (
-                    !shot ||
-                    shot.owner ===
-                    playerId
-                ) {
-                    return;
-                }
-
-
-                processRemoteShot(
-                    shot
+            if (!room) {
+                showGameResult(
+                    "SERVER CLOSED",
+                    "The server was closed."
                 );
-
+                return;
             }
-        );
 
-}
+            if (
+                room.startedAt &&
+                !startTime
+            ) {
+                startTime = room.startedAt;
+            }
 
-
-function getTimeLeft() {
-
-    if (!gameStartTime) {
-        return ROUND_TIME;
-    }
-
-
-    return clamp(
-        ROUND_TIME -
-        (
-            Date.now() -
-            gameStartTime
-        ) / 1000,
-        0,
-        ROUND_TIME
+            if (
+                room.game &&
+                room.game.status === "finished"
+            ) {
+                finishFromFirebase(
+                    room.game.winner
+                );
+            }
+        }
     );
 
+    shotUnsubscribe = onChildAdded(
+        ref(
+            db,
+            `rooms/${roomId}/shots`
+        ),
+        snapshot => {
+            const shot = snapshot.val();
+
+            if (!shot) {
+                return;
+            }
+
+            processRemoteShot(shot);
+        }
+    );
 }
 
-
-let hostFinishSent = false;
-
-
-async function hostTick() {
-
-    if (
-        !isHost ||
-        !started ||
-        gameOver ||
-        !db
-    ) {
+function finishFromFirebase(winner) {
+    if (gameOver) {
         return;
     }
 
+    let title;
+    let text;
 
-    const timeLeft =
-        getTimeLeft();
-
-
-    if (
-        timeLeft <= 0 &&
-        !hostFinishSent
-    ) {
-
-        hostFinishSent =
-            true;
-
-
-        let winner = null;
-
-
-        if (
-            localPlayer.hp >
-            opponentTarget.hp
-        ) {
-
-            winner =
-                "player1";
-
-        } else if (
-            opponentTarget.hp >
-            localPlayer.hp
-        ) {
-
-            winner =
-                "player2";
-
-        }
-
-
-        try {
-
-            await update(
-                ref(
-                    db,
-                    `rooms/${roomId}/game`
-                ),
-                {
-
-                    status:
-                        "finished",
-
-                    winner,
-
-                    time: 0,
-
-                    finishedAt:
-                        Date.now()
-
-                }
-            );
-
-        } catch (error) {
-
-            console.error(
-                error
-            );
-
-        }
-
-    }
-
-}
-
-
-let timeNetworkTimer = 0;
-
-
-function updateNetwork(dt) {
-
-    networkTimer += dt;
-
-
-    if (
-        networkTimer >=
-        NETWORK_RATE
-    ) {
-
-        networkTimer = 0;
-
-        sendLocalState();
-
-    }
-
-
-    timeNetworkTimer += dt;
-
-
-    if (
-        isHost &&
-        timeNetworkTimer >= .25
-    ) {
-
-        timeNetworkTimer = 0;
-
-        hostTick();
-
-    }
-
-}
-
-
-function updateTimer() {
-
-    const time =
-        getTimeLeft();
-
-
-    timeEl.textContent =
-        time.toFixed(1);
-
-
-    if (
-        time <= 5
-    ) {
-
-        timeEl.style.color =
-            "#ff6d7f";
-
+    if (!winner) {
+        title = "DRAW";
+        text = "Time is over.";
     } else {
+        const won =
+            (
+                winner === "player1" &&
+                isHost
+            ) ||
+            (
+                winner === "player2" &&
+                !isHost
+            );
 
-        timeEl.style.color =
-            "";
-
+        if (won) {
+            title = "VICTORY";
+            text = "You won the duel.";
+        } else {
+            title = "DEFEAT";
+            text = "Your opponent won.";
+        }
     }
 
+    showGameResult(title, text);
 }
 
-
-function updateHud() {
-
-    if (
-        !localPlayer ||
-        !opponent
-    ) {
+function showGameResult(title, text) {
+    if (gameOver) {
         return;
     }
 
+    gameOver = true;
 
-    const localHp =
-        clamp(
-            localPlayer.hp,
-            0,
-            100
-        );
+    resultTitle.textContent = title;
+    resultText.textContent = text;
 
-    const enemyHp =
-        clamp(
-            opponent.hp,
-            0,
-            100
-        );
-
-
-    p1HpText.textContent =
-        Math.ceil(localHp);
-
-    p2HpText.textContent =
-        Math.ceil(enemyHp);
-
-
-    p1Health.style.width =
-        `${localHp}%`;
-
-    p2Health.style.width =
-        `${enemyHp}%`;
-
+    overlay.classList.add("show");
 }
 
+function drawBackground() {
+    ctx.fillStyle = "#0b0f15";
+    ctx.fillRect(0, 0, W, H);
 
-function drawGrid() {
-
-    ctx.fillStyle =
-        "#0b0f15";
-
-    ctx.fillRect(
-        0,
-        0,
-        W,
-        H
-    );
-
-
-    ctx.strokeStyle =
-        "rgba(255,255,255,.035)";
-
+    ctx.strokeStyle = "rgba(255,255,255,.035)";
     ctx.lineWidth = 1;
 
-
-    const gridSize = 40;
-
-
-    for (
-        let x = 0;
-        x <= W;
-        x += gridSize
-    ) {
-
+    for (let x = 0; x <= W; x += 40) {
         ctx.beginPath();
-
-        ctx.moveTo(
-            x,
-            0
-        );
-
-        ctx.lineTo(
-            x,
-            H
-        );
-
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
         ctx.stroke();
-
     }
 
-
-    for (
-        let y = 0;
-        y <= H;
-        y += gridSize
-    ) {
-
+    for (let y = 0; y <= H; y += 40) {
         ctx.beginPath();
-
-        ctx.moveTo(
-            0,
-            y
-        );
-
-        ctx.lineTo(
-            W,
-            y
-        );
-
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
         ctx.stroke();
-
     }
 
-
-    ctx.strokeStyle =
-        "#283241";
-
+    ctx.strokeStyle = "#283241";
     ctx.lineWidth = 2;
-
-    ctx.strokeRect(
-        1,
-        1,
-        W - 2,
-        H - 2
-    );
-
+    ctx.strokeRect(1, 1, W - 2, H - 2);
 }
 
-
-function drawPlayer(
-    player,
-    color,
-    local
-) {
-
+function drawPlayer(player, color, local) {
     if (!player) {
         return;
     }
 
-
     ctx.save();
-
 
     ctx.translate(
         player.x,
         player.y
     );
 
+    ctx.rotate(player.angle);
 
-    ctx.rotate(
-        player.angle
-    );
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = color;
 
-
-    ctx.shadowBlur = 18;
-
-    ctx.shadowColor =
-        color;
-
-    ctx.fillStyle =
-        color;
-
+    ctx.fillStyle = color;
 
     ctx.beginPath();
-
     ctx.arc(
         0,
         0,
@@ -1790,49 +977,35 @@ function drawPlayer(
         0,
         Math.PI * 2
     );
-
     ctx.fill();
-
 
     ctx.shadowBlur = 0;
 
-
-    ctx.fillStyle =
-        "#ffffff";
-
+    ctx.fillStyle = "#fff";
 
     ctx.beginPath();
-
     ctx.moveTo(
         player.radius + 9,
         0
     );
-
     ctx.lineTo(
         player.radius - 4,
         -5
     );
-
     ctx.lineTo(
         player.radius - 4,
         5
     );
-
     ctx.closePath();
-
     ctx.fill();
-
 
     ctx.restore();
 
-
     if (local) {
-
         ctx.strokeStyle =
-            "rgba(255,255,255,.2)";
+            "rgba(255,255,255,.18)";
 
         ctx.lineWidth = 1;
-
 
         ctx.beginPath();
 
@@ -1845,119 +1018,51 @@ function drawPlayer(
         );
 
         ctx.stroke();
-
     }
-
 }
-
 
 function drawBullets() {
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = "#fff";
+    ctx.fillStyle = "#fff";
 
-    for (
-        const bullet of bullets
-    ) {
-
-        ctx.fillStyle =
-            "#ffffff";
-
-        ctx.shadowBlur = 10;
-
-        ctx.shadowColor =
-            "#ffffff";
-
-
+    for (const b of bullets) {
         ctx.beginPath();
-
         ctx.arc(
-            bullet.x,
-            bullet.y,
+            b.x,
+            b.y,
             4,
             0,
             Math.PI * 2
         );
-
         ctx.fill();
-
     }
-
-
-    for (
-        const bullet of remoteBullets
-    ) {
-
-        ctx.fillStyle =
-            "#ff6d7f";
-
-        ctx.shadowBlur = 10;
-
-        ctx.shadowColor =
-            "#ff6d7f";
-
-
-        ctx.beginPath();
-
-        ctx.arc(
-            bullet.x,
-            bullet.y,
-            4,
-            0,
-            Math.PI * 2
-        );
-
-        ctx.fill();
-
-    }
-
 
     ctx.shadowBlur = 0;
-
 }
-
 
 function drawParticles() {
-
-    for (
-        const p of particles
-    ) {
-
-        const alpha =
-            clamp(
-                p.life /
-                p.maxLife,
-                0,
-                1
-            );
-
-
-        ctx.globalAlpha =
-            alpha;
-
-        ctx.fillStyle =
-            p.color;
-
-
-        ctx.beginPath();
-
-        ctx.arc(
-            p.x,
-            p.y,
-            2,
+    for (const p of particles) {
+        ctx.globalAlpha = clamp(
+            p.life * 4,
             0,
-            Math.PI * 2
+            1
         );
 
-        ctx.fill();
+        ctx.fillStyle = p.color;
 
+        ctx.fillRect(
+            p.x - 1,
+            p.y - 1,
+            3,
+            3
+        );
     }
 
-
     ctx.globalAlpha = 1;
-
 }
 
-
 function drawHook() {
-
     if (
         !localPlayer ||
         !localPlayer.hook.active
@@ -1965,20 +1070,10 @@ function drawHook() {
         return;
     }
 
-
-    ctx.save();
-
-
     ctx.strokeStyle =
-        "rgba(103,167,255,.85)";
+        "rgba(103,167,255,.8)";
 
     ctx.lineWidth = 2;
-
-    ctx.setLineDash([
-        7,
-        7
-    ]);
-
 
     ctx.beginPath();
 
@@ -1994,73 +1089,56 @@ function drawHook() {
 
     ctx.stroke();
 
-
-    ctx.setLineDash([]);
-
-
-    ctx.fillStyle =
-        "#67a7ff";
-
-    ctx.shadowBlur = 15;
-
-    ctx.shadowColor =
-        "#67a7ff";
-
+    ctx.fillStyle = "#67a7ff";
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = "#67a7ff";
 
     ctx.beginPath();
 
     ctx.arc(
         localPlayer.hook.x,
         localPlayer.hook.y,
-        7,
+        6,
         0,
         Math.PI * 2
     );
 
     ctx.fill();
 
-
-    ctx.restore();
-
+    ctx.shadowBlur = 0;
 }
 
-
 function drawCrosshair() {
-
     ctx.strokeStyle =
         "rgba(255,255,255,.75)";
 
     ctx.lineWidth = 1;
 
-
     ctx.beginPath();
 
     ctx.moveTo(
-        mouse.x - 8,
+        mouse.x - 7,
         mouse.y
     );
 
     ctx.lineTo(
-        mouse.x + 8,
+        mouse.x + 7,
         mouse.y
     );
 
     ctx.moveTo(
         mouse.x,
-        mouse.y - 8
+        mouse.y - 7
     );
 
     ctx.lineTo(
         mouse.x,
-        mouse.y + 8
+        mouse.y + 7
     );
 
     ctx.stroke();
 
-
-    ctx.fillStyle =
-        "#ffffff";
-
+    ctx.fillStyle = "#fff";
 
     ctx.beginPath();
 
@@ -2073,18 +1151,12 @@ function drawCrosshair() {
     );
 
     ctx.fill();
-
 }
 
-
 function render() {
-
-    drawGrid();
-
+    drawBackground();
     drawHook();
-
     drawBullets();
-
     drawParticles();
 
     drawPlayer(
@@ -2100,239 +1172,75 @@ function render() {
     );
 
     drawCrosshair();
-
 }
 
-
-function showGameResult(
-    title,
-    text
-) {
-
-    if (gameOver) {
-        return;
-    }
-
-
-    gameOver = true;
-
-
-    resultTitle.textContent =
-        title;
-
-    resultText.textContent =
-        text;
-
-    overlay.classList.add(
-        "show"
+function gameLoop(now) {
+    const dt = Math.min(
+        0.033,
+        (now - lastTime) / 1000
     );
 
-}
+    lastTime = now;
 
-
-function finishFromFirebase(
-    winner
-) {
-
-    if (gameOver) {
-        return;
-    }
-
-
-    let title;
-    let text;
-
-
-    if (!winner) {
-
-        title = "DRAW";
-
-        text =
-            "Time is over.";
-
-    } else {
-
-        const won =
-            (
-                winner === "player1" &&
-                isHost
-            ) ||
-            (
-                winner === "player2" &&
-                !isHost
-            );
-
-
-        if (won) {
-
-            title = "VICTORY";
-
-            text =
-                "You won the duel.";
-
-        } else {
-
-            title = "DEFEAT";
-
-            text =
-                "Your opponent won.";
-
-        }
-
-    }
-
-
-    showGameResult(
-        title,
-        text
-    );
-
-}
-
-
-function frame(now) {
-
-    const dt =
-        Math.min(
-            .033,
-            (now - lastFrame) /
-            1000
-        );
-
-
-    lastFrame = now;
-
-
-    if (
-        started &&
-        !gameOver
-    ) {
-
+    if (started) {
         updateAim();
-
         updateMovement(dt);
-
         updateHook(dt);
-
+        updateShooting(dt);
         updateBullets(dt);
-
-        interpolateOpponent(dt);
-
+        updateOpponent(dt);
         updateParticles(dt);
-
         updateNetwork(dt);
-
-        updateTimer();
-
+        updateTimer(dt);
         updateHud();
-
     } else {
-
         updateParticles(dt);
-
     }
-
 
     render();
 
-
-    requestAnimationFrame(
-        frame
-    );
-
+    requestAnimationFrame(gameLoop);
 }
-
 
 window.addEventListener(
     "duel-game-start",
     event => {
+        const data = event.detail;
 
-        const data =
-            event.detail;
-
-
-        roomId =
-            data.roomId;
-
-        playerId =
-            data.playerId;
-
-        isHost =
-            data.isHost;
+        roomId = data.roomId;
+        playerId = data.playerId;
+        isHost = data.isHost;
 
         db =
-            window.duelRoom
-                .getDatabase();
+            window.duelRoom &&
+            window.duelRoom.getDatabase
+                ? window.duelRoom.getDatabase()
+                : null;
 
+        if (!db) {
+            console.error(
+                "Firebase database is unavailable."
+            );
+            return;
+        }
 
         resetGame();
 
-
-        gameStartTime =
-            Date.now();
-
-
-        remoteGameStartTime =
-            gameStartTime;
-
-
+        startTime = Date.now();
         started = true;
-
 
         setupFirebase();
 
-
-        sendLocalState(
-            true
-        );
-
+        sendPlayerState(true);
     }
 );
-
-
-backToMenu.addEventListener(
-    "click",
-    async () => {
-
-        if (
-            roomId &&
-            db
-        ) {
-
-            try {
-
-                await remove(
-                    ref(
-                        db,
-                        `rooms/${roomId}/shots`
-                    )
-                );
-
-            } catch {}
-
-        }
-
-
-        window.dispatchEvent(
-            new Event(
-                "duel-return-menu"
-            )
-        );
-
-    }
-);
-
 
 window.addEventListener(
     "keydown",
-    event => {
+    e => {
+        const key = e.key.toLowerCase();
 
-        const key =
-            event.key.toLowerCase();
-
-
-        keys.add(key);
-
+        keys[key] = true;
 
         if (
             key === " " ||
@@ -2341,146 +1249,93 @@ window.addEventListener(
             key === "arrowleft" ||
             key === "arrowright"
         ) {
-
-            event.preventDefault();
-
+            e.preventDefault();
         }
-
     }
 );
-
 
 window.addEventListener(
     "keyup",
-    event => {
-
-        keys.delete(
-            event.key.toLowerCase()
-        );
-
+    e => {
+        keys[e.key.toLowerCase()] = false;
     }
 );
-
 
 window.addEventListener(
     "blur",
     () => {
-
-        keys.clear();
+        for (const key in keys) {
+            keys[key] = false;
+        }
 
         mouse.down = false;
-
-        mouse.rightDown = false;
-
     }
 );
-
 
 canvas.addEventListener(
     "mousemove",
-    event => {
-
-        const point =
-            canvasPoint(event);
-
-
-        mouse.x =
-            point.x;
-
-        mouse.y =
-            point.y;
-
-        updateAim();
-
-    }
+    updateMousePosition,
+    { passive: true }
 );
-
 
 canvas.addEventListener(
     "mousedown",
-    event => {
+    e => {
+        e.preventDefault();
 
-        event.preventDefault();
+        updateMousePosition(e);
 
-
-        if (
-            event.button === 0
-        ) {
-
+        if (e.button === 0) {
             mouse.down = true;
-
             shoot();
-
         }
 
-
-        if (
-            event.button === 2
-        ) {
-
-            mouse.rightDown = true;
-
+        if (e.button === 2) {
             launchHook();
-
         }
-
     }
 );
-
 
 window.addEventListener(
     "mouseup",
-    event => {
-
-        if (
-            event.button === 0
-        ) {
-
+    e => {
+        if (e.button === 0) {
             mouse.down = false;
-
         }
-
-
-        if (
-            event.button === 2
-        ) {
-
-            mouse.rightDown = false;
-
-        }
-
     }
 );
-
 
 canvas.addEventListener(
     "contextmenu",
-    event => {
-
-        event.preventDefault();
-
+    e => {
+        e.preventDefault();
     }
 );
 
-
-setInterval(
+backToMenu.addEventListener(
+    "click",
     () => {
+        started = false;
 
-        if (
-            mouse.down &&
-            started &&
-            !gameOver
-        ) {
-
-            shoot();
-
+        if (opponentUnsubscribe) {
+            opponentUnsubscribe();
+            opponentUnsubscribe = null;
         }
 
-    },
-    30
+        if (roomUnsubscribe) {
+            roomUnsubscribe();
+            roomUnsubscribe = null;
+        }
+
+        if (shotUnsubscribe) {
+            shotUnsubscribe();
+            shotUnsubscribe = null;
+        }
+
+        window.dispatchEvent(
+            new Event("duel-return-menu")
+        );
+    }
 );
 
-
-requestAnimationFrame(
-    frame
-);
+requestAnimationFrame(gameLoop);
