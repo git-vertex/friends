@@ -3,11 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase 1v1</title>
+    <title>1v1</title>
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         html, body {
             margin: 0;
@@ -20,28 +18,24 @@
         }
 
         #menu {
-            position: absolute;
+            position: fixed;
             inset: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #08090d;
-            z-index: 10;
         }
 
         .panel {
             width: 360px;
             padding: 30px;
             background: #11131a;
-            border: 1px solid #272b38;
+            border: 1px solid #292d38;
             border-radius: 14px;
-            box-shadow: 0 20px 80px rgba(0,0,0,.5);
         }
 
         h1 {
-            margin: 0 0 25px;
+            margin: 0 0 24px;
             text-align: center;
-            font-size: 28px;
         }
 
         input {
@@ -49,12 +43,13 @@
             height: 46px;
             margin-bottom: 10px;
             padding: 0 14px;
-            border: 1px solid #303442;
+            border: 1px solid #303542;
             border-radius: 8px;
             outline: none;
-            background: #0b0d12;
+            background: #090b10;
             color: white;
             font-size: 16px;
+            text-transform: uppercase;
         }
 
         button {
@@ -65,7 +60,6 @@
             border-radius: 8px;
             background: #5865f2;
             color: white;
-            font-size: 15px;
             font-weight: bold;
             cursor: pointer;
         }
@@ -75,25 +69,11 @@
         }
 
         #status {
-            min-height: 22px;
-            margin-top: 10px;
+            min-height: 20px;
+            margin-top: 8px;
             text-align: center;
-            color: #9298a8;
+            color: #999eac;
             font-size: 14px;
-        }
-
-        #roomInfo {
-            display: none;
-            position: absolute;
-            top: 18px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 5;
-            padding: 10px 18px;
-            background: rgba(10,12,18,.85);
-            border: 1px solid #2d3240;
-            border-radius: 9px;
-            font-weight: bold;
         }
 
         #game {
@@ -108,47 +88,54 @@
             height: 100%;
         }
 
+        #roomInfo {
+            position: fixed;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 18px;
+            border: 1px solid #303542;
+            border-radius: 8px;
+            background: rgba(10, 12, 18, .9);
+            z-index: 5;
+        }
+
         #hud {
-            position: absolute;
+            position: fixed;
             left: 20px;
             top: 20px;
             z-index: 5;
-            pointer-events: none;
         }
 
         .hp {
             width: 220px;
             height: 18px;
-            margin-bottom: 8px;
-            overflow: hidden;
-            border-radius: 5px;
             background: #252832;
-            border: 1px solid #343946;
+            border-radius: 5px;
+            overflow: hidden;
         }
 
         #hpFill {
-            height: 100%;
             width: 100%;
-            background: #43e06f;
-            transition: width .1s linear;
+            height: 100%;
+            background: #43df70;
         }
 
         #controls {
-            color: #a5aaba;
+            margin-top: 8px;
+            color: #a5aab8;
             font-size: 13px;
         }
 
         #message {
-            position: absolute;
-            left: 50%;
+            position: fixed;
             top: 50%;
+            left: 50%;
             transform: translate(-50%, -50%);
-            z-index: 6;
             font-size: 40px;
             font-weight: bold;
-            text-align: center;
-            text-shadow: 0 5px 30px black;
             pointer-events: none;
+            z-index: 6;
         }
     </style>
 </head>
@@ -156,7 +143,7 @@
 
 <div id="menu">
     <div class="panel">
-        <h1>Firebase 1v1</h1>
+        <h1>1v1</h1>
 
         <input id="roomInput" maxlength="6" placeholder="ROOM CODE">
 
@@ -167,24 +154,26 @@
     </div>
 </div>
 
-<div id="roomInfo">
-    ROOM: <span id="roomCode"></span>
-</div>
-
 <div id="game">
-    <canvas id="canvas"></canvas>
+
+    <div id="roomInfo">
+        ROOM: <span id="roomCode"></span>
+    </div>
 
     <div id="hud">
         <div class="hp">
             <div id="hpFill"></div>
         </div>
+
         <div id="controls">
-            WASD — move<br>
-            LMB — attack
+            WASD / Arrows — move<br>
+            Left Mouse — attack
         </div>
     </div>
 
     <div id="message"></div>
+
+    <canvas id="canvas"></canvas>
 </div>
 
 <script type="module" src="./game.js"></script>

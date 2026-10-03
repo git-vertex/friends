@@ -1,65 +1,63 @@
 import { db } from "./firebase-config.js";
 
 import {
-    doc,
-    setDoc,
-    getDoc,
-    onSnapshot,
-    updateDoc
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
-
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+    ref,
+    get,
+    set,
+    update,
+    onValue
+} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
 
 const menu = document.getElementById("menu");
 const game = document.getElementById("game");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
 const roomInput = document.getElementById("roomInput");
 const createBtn = document.getElementById("createBtn");
 const joinBtn = document.getElementById("joinBtn");
-const statusText = document.getElementById("status");
+const status = document.getElementById("status");
 
-const roomCodeText = document.getElementById("roomCode");
+const roomCodeElement = document.getElementById("roomCode");
 const hpFill = document.getElementById("hpFill");
 const message = document.getElementById("message");
 
-let roomId = null;
-let playerId = crypto.randomUUID();
+const playerId = crypto.randomUUID();
 
-let players = {};
-
-let player = {
-    x: 250,
-    y: 300,
-    hp: 100,
-    color: "#4da3ff",
-    lastAttack: 0
-};
-
-let opponent = null;
-
-const keys = {};
-
-const WORLD_WIDTH = 1400;
-const WORLD_HEIGHT = 800;
-
+const WORLD_WIDTH = 1600;
+const WORLD_HEIGHT = 900;
+const PLAYER_RADIUS = 22;
 const SPEED = 4;
 
 const ATTACK_RANGE = 95;
 const ATTACK_DAMAGE = 20;
-const ATTACK_COOLDOWN = 500;
+const ATTACK_COOLDOWN = 2000;
+
+let roomId = null;
+let players = {};
+let opponent = null;
+
+let player = {
+    x: 300,
+    y: WORLD_HEIGHT / 2,
+    hp: 100,
+    color: "#4da3ff"
+};
+
+let lastAttack = 0;
+let lastNetworkUpdate = 0;
+
+const keys = {};
 
 let cameraX = 0;
 let cameraY = 0;
 
-let unsubscribe = null;
-
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+canvas.width = innerWidth;
+canvas.height = innerHeight;
 
 window.addEventListener("resize", () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
 });
 
 window.addEventListener("keydown", e => {
@@ -71,14 +69,15 @@ window.addEventListener("keyup", e => {
 });
 
 canvas.addEventListener("mousedown", e => {
-    if (e.button === 0) {
-        attack();
-    }
+    if (e.button === 0) attack();
 });
+
+function setStatus(text) {
+    status.textContent = text;
+}
 
 function generateRoomCode() {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
     let code = "";
 
     for (let i = 0; i < 6; i++) {
@@ -88,50 +87,28 @@ function generateRoomCode() {
     return code;
 }
 
-function setStatus(text) {
-    statusText.textContent = text;
-}
-
-function randomSpawn() {
-    return {
-        x: 250 + Math.random() * (WORLD_WIDTH - 500),
-        y: 200 + Math.random() * (WORLD_HEIGHT - 400)
-    };
-}
-
 async function createRoom() {
     setStatus("Creating room...");
 
     try {
         let code = generateRoomCode();
+        let roomRef = ref(db, `rooms/${code}`);
+        let snapshot = await get(roomRef);
 
-        let roomRef = doc(db, "rooms", code);
-
-        let room = await getDoc(roomRef);
-
-        while (room.exists()) {
+        while (snapshot.exists()) {
             code = generateRoomCode();
-            roomRef = doc(db, "rooms", code);
-            room = await getDoc(roomRef);
+            roomRef = ref(db, `rooms/${code}`);
+            snapshot = await get(roomRef);
         }
 
-        const spawn = {
-            x: 300,
-            y: WORLD_HEIGHT / 2
-        };
+        player.x = 300;
+        player.y = WORLD_HEIGHT / 2;
+        player.hp = 100;
+        player.color = "#4da3ff";
 
-        player.x = spawn.x;
-        player.y = spawn.y;
-
-        await setDoc(roomRef, {
-            host: playerId,
+        await set(roomRef, {
             players: {
-                [playerId]: {
-                    x: player.x,
-                    y: player.y,
-                    hp: 100,
-                    color: "#4da3ff"
-                }
+                [playerId]: player
             }
         });
 
@@ -139,7 +116,7 @@ async function createRoom() {
 
     } catch (error) {
         console.error(error);
-        setStatus("Firebase error");
+        setStatus(error.message);
     }
 }
 
@@ -147,22 +124,22 @@ async function joinRoom() {
     const code = roomInput.value.trim().toUpperCase();
 
     if (code.length !== 6) {
-        setStatus("Enter a 6-character room code");
+        setStatus("Enter a 6-character code");
         return;
     }
 
-    setStatus("Joining...");
+    setStatus("Joining room...");
 
     try {
-        const roomRef = doc(db, "rooms", code);
-        const roomSnap = await getDoc(roomRef);
+        const roomRef = ref(db, `rooms/${code}`);
+        const snapshot = await get(roomRef);
 
-        if (!roomSnap.exists()) {
+        if (!snapshot.exists()) {
             setStatus("Room does not exist");
             return;
         }
 
-        const data = roomSnap.data();
+        const data = snapshot.val();
         const roomPlayers = data.players || {};
 
         if (Object.keys(roomPlayers).length >= 2) {
@@ -170,40 +147,30 @@ async function joinRoom() {
             return;
         }
 
-        const spawn = {
-            x: WORLD_WIDTH - 300,
-            y: WORLD_HEIGHT / 2
-        };
+        player.x = WORLD_WIDTH - 300;
+        player.y = WORLD_HEIGHT / 2;
+        player.hp = 100;
+        player.color = "#ff4d69";
 
-        player.x = spawn.x;
-        player.y = spawn.y;
-
-        await updateDoc(roomRef, {
-            [`players.${playerId}`]: {
-                x: player.x,
-                y: player.y,
-                hp: 100,
-                color: "#ff4d69"
-            }
+        await update(roomRef, {
+            [`players/${playerId}`]: player
         });
 
         startGame(code);
 
     } catch (error) {
         console.error(error);
-        setStatus("Firebase error");
+        setStatus(error.message);
     }
 }
 
 function startGame(code) {
     roomId = code;
 
-    roomCodeText.textContent = code;
+    roomCodeElement.textContent = code;
 
     menu.style.display = "none";
     game.style.display = "block";
-
-    message.textContent = "";
 
     listenToRoom();
 
@@ -211,22 +178,17 @@ function startGame(code) {
 }
 
 function listenToRoom() {
-    if (unsubscribe) {
-        unsubscribe();
-    }
+    const roomRef = ref(db, `rooms/${roomId}`);
 
-    const roomRef = doc(db, "rooms", roomId);
-
-    unsubscribe = onSnapshot(roomRef, snapshot => {
+    onValue(roomRef, snapshot => {
         if (!snapshot.exists()) {
             message.textContent = "ROOM CLOSED";
             return;
         }
 
-        const data = snapshot.data();
+        const data = snapshot.val();
 
         players = data.players || {};
-
         opponent = null;
 
         for (const id in players) {
@@ -244,26 +206,25 @@ function listenToRoom() {
     });
 }
 
-let lastSync = 0;
-
 async function syncPlayer() {
     if (!roomId) return;
 
     const now = performance.now();
 
-    if (now - lastSync < 50) {
-        return;
-    }
+    if (now - lastNetworkUpdate < 50) return;
 
-    lastSync = now;
+    lastNetworkUpdate = now;
 
     try {
-        const roomRef = doc(db, "rooms", roomId);
+        const playerRef = ref(
+            db,
+            `rooms/${roomId}/players/${playerId}`
+        );
 
-        await updateDoc(roomRef, {
-            [`players.${playerId}.x`]: player.x,
-            [`players.${playerId}.y`]: player.y,
-            [`players.${playerId}.hp`]: player.hp
+        await update(playerRef, {
+            x: player.x,
+            y: player.y,
+            hp: player.hp
         });
 
     } catch (error) {
@@ -275,24 +236,13 @@ function movePlayer() {
     let dx = 0;
     let dy = 0;
 
-    if (keys["w"] || keys["arrowup"]) {
-        dy -= 1;
-    }
-
-    if (keys["s"] || keys["arrowdown"]) {
-        dy += 1;
-    }
-
-    if (keys["a"] || keys["arrowleft"]) {
-        dx -= 1;
-    }
-
-    if (keys["d"] || keys["arrowright"]) {
-        dx += 1;
-    }
+    if (keys["w"] || keys["arrowup"]) dy--;
+    if (keys["s"] || keys["arrowdown"]) dy++;
+    if (keys["a"] || keys["arrowleft"]) dx--;
+    if (keys["d"] || keys["arrowright"]) dx++;
 
     if (dx !== 0 || dy !== 0) {
-        const length = Math.sqrt(dx * dx + dy * dy);
+        const length = Math.hypot(dx, dy);
 
         dx /= length;
         dy /= length;
@@ -301,61 +251,63 @@ function movePlayer() {
         player.y += dy * SPEED;
     }
 
-    player.x = Math.max(25, Math.min(WORLD_WIDTH - 25, player.x));
-    player.y = Math.max(25, Math.min(WORLD_HEIGHT - 25, player.y));
+    player.x = Math.max(
+        PLAYER_RADIUS,
+        Math.min(WORLD_WIDTH - PLAYER_RADIUS, player.x)
+    );
+
+    player.y = Math.max(
+        PLAYER_RADIUS,
+        Math.min(WORLD_HEIGHT - PLAYER_RADIUS, player.y)
+    );
 }
 
 async function attack() {
     const now = performance.now();
 
-    if (now - player.lastAttack < ATTACK_COOLDOWN) {
-        return;
-    }
+    if (now - lastAttack < ATTACK_COOLDOWN) return;
 
-    player.lastAttack = now;
+    lastAttack = now;
 
-    if (!opponent) {
-        return;
-    }
+    if (!opponent) return;
 
     const dx = opponent.x - player.x;
     const dy = opponent.y - player.y;
+    const distance = Math.hypot(dx, dy);
 
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance > ATTACK_RANGE) return;
 
-    if (distance > ATTACK_RANGE) {
-        return;
-    }
+    const opponentId = Object.keys(players).find(
+        id => id !== playerId
+    );
 
-    const opponentId = Object.keys(players).find(id => id !== playerId);
+    if (!opponentId) return;
 
-    if (!opponentId) {
-        return;
-    }
+    const opponentRef = ref(
+        db,
+        `rooms/${roomId}/players/${opponentId}`
+    );
 
-    const newHp = Math.max(0, opponent.hp - ATTACK_DAMAGE);
+    const hp = Math.max(
+        0,
+        opponent.hp - ATTACK_DAMAGE
+    );
 
-    try {
-        const roomRef = doc(db, "rooms", roomId);
+    await update(opponentRef, { hp });
 
-        await updateDoc(roomRef, {
-            [`players.${opponentId}.hp`]: newHp
-        });
+    if (hp <= 0) {
+        setTimeout(async () => {
+            const spawnX =
+                Math.random() > 0.5
+                    ? 300
+                    : WORLD_WIDTH - 300;
 
-        if (newHp <= 0) {
-            setTimeout(async () => {
-                try {
-                    await updateDoc(roomRef, {
-                        [`players.${opponentId}.hp`]: 100,
-                        [`players.${opponentId}.x`]: Math.random() > 0.5 ? 300 : WORLD_WIDTH - 300,
-                        [`players.${opponentId}.y`]: WORLD_HEIGHT / 2
-                    });
-                } catch {}
-            }, 1000);
-        }
-
-    } catch (error) {
-        console.error(error);
+            await update(opponentRef, {
+                hp: 100,
+                x: spawnX,
+                y: WORLD_HEIGHT / 2
+            });
+        }, 1000);
     }
 }
 
@@ -367,6 +319,21 @@ function updateHUD() {
     } else {
         message.textContent = "";
     }
+}
+
+function updateCamera() {
+    cameraX = player.x - canvas.width / 2;
+    cameraY = player.y - canvas.height / 2;
+
+    cameraX = Math.max(
+        0,
+        Math.min(WORLD_WIDTH - canvas.width, cameraX)
+    );
+
+    cameraY = Math.max(
+        0,
+        Math.min(WORLD_HEIGHT - canvas.height, cameraY)
+    );
 }
 
 function worldToScreen(x, y) {
@@ -382,17 +349,17 @@ function drawGrid() {
     ctx.strokeStyle = "#171a22";
     ctx.lineWidth = 1;
 
-    const startX = -cameraX % grid;
-    const startY = -cameraY % grid;
+    const offsetX = (-cameraX) % grid;
+    const offsetY = (-cameraY) % grid;
 
-    for (let x = startX; x < canvas.width; x += grid) {
+    for (let x = offsetX; x < canvas.width; x += grid) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, canvas.height);
         ctx.stroke();
     }
 
-    for (let y = startY; y < canvas.height; y += grid) {
+    for (let y = offsetY; y < canvas.height; y += grid) {
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(canvas.width, y);
@@ -401,17 +368,12 @@ function drawGrid() {
 }
 
 function drawWorld() {
-    const topLeft = worldToScreen(0, 0);
-
     ctx.fillStyle = "#0d1016";
-    ctx.fillRect(
-        topLeft.x,
-        topLeft.y,
-        WORLD_WIDTH,
-        WORLD_HEIGHT
-    );
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     drawGrid();
+
+    const topLeft = worldToScreen(0, 0);
 
     ctx.strokeStyle = "#343a49";
     ctx.lineWidth = 4;
@@ -424,70 +386,86 @@ function drawWorld() {
     );
 }
 
-function drawPlayer(x, y, color, hp, isMe) {
-    const pos = worldToScreen(x, y);
+function drawPlayer(x, y, color, hp, own) {
+    const position = worldToScreen(x, y);
 
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 22, 0, Math.PI * 2);
+
+    ctx.arc(
+        position.x,
+        position.y,
+        PLAYER_RADIUS,
+        0,
+        Math.PI * 2
+    );
 
     ctx.fillStyle = color;
     ctx.fill();
 
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = isMe ? 3 : 2;
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = own ? 3 : 2;
     ctx.stroke();
 
     const barWidth = 50;
-    const barHeight = 6;
 
     ctx.fillStyle = "#252832";
 
     ctx.fillRect(
-        pos.x - barWidth / 2,
-        pos.y - 38,
+        position.x - barWidth / 2,
+        position.y - 38,
         barWidth,
-        barHeight
+        6
     );
 
-    ctx.fillStyle = hp > 50 ? "#43e06f" : hp > 20 ? "#ffd447" : "#ff4757";
+    ctx.fillStyle =
+        hp > 50
+            ? "#43df70"
+            : hp > 20
+                ? "#ffd447"
+                : "#ff4757";
 
     ctx.fillRect(
-        pos.x - barWidth / 2,
-        pos.y - 38,
+        position.x - barWidth / 2,
+        position.y - 38,
         barWidth * (hp / 100),
-        barHeight
+        6
     );
 
-    if (isMe) {
-        ctx.fillStyle = "#ffffff";
+    if (own) {
+        ctx.fillStyle = "white";
         ctx.font = "12px Arial";
         ctx.textAlign = "center";
-        ctx.fillText("YOU", pos.x, pos.y + 40);
+
+        ctx.fillText(
+            "YOU",
+            position.x,
+            position.y + 40
+        );
     }
 }
 
 function drawAttackRange() {
-    const pos = worldToScreen(player.x, player.y);
+    const position = worldToScreen(
+        player.x,
+        player.y
+    );
 
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, ATTACK_RANGE, 0, Math.PI * 2);
+
+    ctx.arc(
+        position.x,
+        position.y,
+        ATTACK_RANGE,
+        0,
+        Math.PI * 2
+    );
 
     ctx.strokeStyle = "rgba(77,163,255,.08)";
     ctx.lineWidth = 2;
     ctx.stroke();
 }
 
-function updateCamera() {
-    cameraX = player.x - canvas.width / 2;
-    cameraY = player.y - canvas.height / 2;
-
-    cameraX = Math.max(0, Math.min(WORLD_WIDTH - canvas.width, cameraX));
-    cameraY = Math.max(0, Math.min(WORLD_HEIGHT - canvas.height, cameraY));
-}
-
 function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     updateCamera();
 
     drawWorld();
@@ -515,11 +493,8 @@ function draw() {
 
 async function loop() {
     movePlayer();
-
     draw();
-
     await syncPlayer();
-
     requestAnimationFrame(loop);
 }
 

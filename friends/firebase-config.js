@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebas
 import { getDatabase } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyA2wzPsy6M1XBkfbOxUPJ7CrWDyDmB8os",
+    apiKey: "AIzaSyA2wzPsy6M1XBfbOxUP7JdCrWDyDmB8os",
     authDomain: "friends-66f85.firebaseapp.com",
     databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
     projectId: "friends-66f85",
