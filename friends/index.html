@@ -10,33 +10,51 @@
 
 <div id="lobby">
     <div class="lobby-panel">
-        <h1>DUEL ARENA</h1>
-        <p>Онлайн 1v1 через Firebase</p>
+        <div class="logo">DUEL ARENA</div>
+        <div class="subtitle">REAL-TIME 1V1</div>
 
-        <button id="createRoom">Создать комнату</button>
+        <button id="createRoom" class="primary">
+            СОЗДАТЬ КОМНАТУ
+        </button>
 
         <div id="createdRoom" class="created-room hidden">
-            <span>Код комнаты</span>
-            <strong id="roomCode">------</strong>
-            <button id="copyCode">Копировать код</button>
-            <small id="waitingText">Ждём второго игрока...</small>
+            <div class="room-label">КОД КОМНАТЫ</div>
+
+            <div class="room-code-row">
+                <strong id="roomCode">------</strong>
+                <button id="copyCode" class="copy-button">
+                    COPY
+                </button>
+            </div>
+
+            <div id="waitingText" class="waiting">
+                Ждём второго игрока...
+            </div>
         </div>
 
-        <div class="separator">ИЛИ</div>
+        <div class="separator">
+            <span>ИЛИ</span>
+        </div>
 
         <input
             id="joinCode"
+            type="text"
             maxlength="6"
-            placeholder="КОД КОМНАТЫ"
+            placeholder="ВВЕДИ КОД"
             autocomplete="off"
+            spellcheck="false"
         >
 
-        <button id="joinRoom">Войти в комнату</button>
+        <button id="joinRoom">
+            ВОЙТИ В КОМНАТУ
+        </button>
 
-        <div class="separator">ИЛИ</div>
+        <div class="separator">
+            <span>ИЛИ</span>
+        </div>
 
         <button id="playBot" class="secondary">
-            Играть с BOT
+            ИГРАТЬ С BOT
         </button>
 
         <div id="lobbyStatus"></div>
@@ -52,10 +70,12 @@
             <div class="player-card">
                 <span class="dot blue"></span>
 
-                <div>
+                <div class="player-info">
                     <div class="name">YOU</div>
+
                     <div class="label">
-                        HP <span id="p1HpText">100</span>
+                        HP
+                        <span id="p1HpText">100</span>
                     </div>
 
                     <div class="health">
@@ -71,11 +91,14 @@
 
             <div class="player-card right">
 
-                <div>
-                    <div class="name" id="enemyName">OPPONENT</div>
+                <div class="player-info">
+                    <div class="name" id="enemyName">
+                        OPPONENT
+                    </div>
 
                     <div class="label">
-                        HP <span id="p2HpText">100</span>
+                        HP
+                        <span id="p2HpText">100</span>
                     </div>
 
                     <div class="health">
@@ -97,22 +120,28 @@
                 height="540"
             ></canvas>
 
-            <div class="overlay" id="overlay">
+            <div id="overlay" class="overlay">
 
                 <div class="result">
 
-                    <h1 id="resultTitle">TIME</h1>
+                    <div class="result-small">
+                        ROUND RESULT
+                    </div>
+
+                    <h1 id="resultTitle">
+                        YOU WIN
+                    </h1>
 
                     <p id="resultText">
                         Раунд завершён
                     </p>
 
-                    <button id="restart">
-                        Новый раунд
+                    <button id="restart" class="primary">
+                        НОВЫЙ РАУНД
                     </button>
 
                     <button id="backToLobby">
-                        Выйти в меню
+                        В МЕНЮ
                     </button>
 
                 </div>
@@ -124,15 +153,23 @@
         <div class="hint">
             <div>
                 <span class="kbd">WASD</span>
-                движение · мышь — прицел ·
+                движение
+                <span class="separator-dot">·</span>
+                мышь — прицел
+                <span class="separator-dot">·</span>
                 <span class="kbd">ЛКМ</span>
-                стрелять ·
+                стрелять
+                <span class="separator-dot">·</span>
                 <span class="kbd">ПКМ</span>
                 хук
             </div>
 
             <div>
-                Выстрел: 1с · Хук: 2с · Раунд: 30с
+                Выстрел: 1с
+                <span class="separator-dot">·</span>
+                Хук: 2с
+                <span class="separator-dot">·</span>
+                Раунд: 30с
             </div>
         </div>
 
