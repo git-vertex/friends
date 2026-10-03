@@ -1,1794 +1,2489 @@
-import {
-    initializeApp
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
 
-import {
-    getDatabase,
-    ref,
-    set,
-    get,
-    update as firebaseUpdate,
-    onValue,
-    onDisconnect,
-    remove
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+  const timeEl =
+    document.getElementById('time');
 
-const firebaseConfig = {
-    apiKey: "AIzaSyA2wzPsyM6X1XBfbOxUP7JdCrWDyDmB8os",
-    authDomain: "friends-66f85.firebaseapp.com",
-    databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
-    projectId: "friends-66f85",
-    storageBucket: "friends-66f85.firebasestorage.app",
-    messagingSenderId: "841738224372",
-    appId: "1:841738224372:web:92954bc9f16d69b176d4a1"
-};
+  const statusEl =
+    document.getElementById('status');
 
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getDatabase(firebaseApp);
+  const overlay =
+    document.getElementById('overlay');
 
-const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
+  const resultTitle =
+    document.getElementById('resultTitle');
 
-const lobby = document.getElementById("lobby");
+  const resultText =
+    document.getElementById('resultText');
 
-const createRoomButton = document.getElementById("createRoom");
-const joinRoomButton = document.getElementById("joinRoom");
-const playBotButton = document.getElementById("playBot");
-const copyCodeButton = document.getElementById("copyCode");
+  const restartBtn =
+    document.getElementById('restart');
 
-const createdRoom = document.getElementById("createdRoom");
-const roomCodeElement = document.getElementById("roomCode");
-const waitingText = document.getElementById("waitingText");
-const joinCodeInput = document.getElementById("joinCode");
-const lobbyStatus = document.getElementById("lobbyStatus");
+  const p1HpText =
+    document.getElementById('p1HpText');
 
-const timeElement = document.getElementById("time");
-const statusElement = document.getElementById("status");
+  const p2HpText =
+    document.getElementById('p2HpText');
 
-const p1HpText = document.getElementById("p1HpText");
-const p2HpText = document.getElementById("p2HpText");
+  const p1Health =
+    document.getElementById('p1Health');
 
-const p1Health = document.getElementById("p1Health");
-const p2Health = document.getElementById("p2Health");
+  const p2Health =
+    document.getElementById('p2Health');
 
-const enemyName = document.getElementById("enemyName");
+  const W = canvas.width;
+  const H = canvas.height;
 
-const overlay = document.getElementById("overlay");
-const resultTitle = document.getElementById("resultTitle");
-const resultText = document.getElementById("resultText");
+  const keys = new Set();
 
-const restartButton = document.getElementById("restart");
-const backToLobbyButton = document.getElementById("backToLobby");
+  const mouse = {
+    x: W * .5,
+    y: H * .5,
+    down: false
+  };
 
-const playerId = crypto.randomUUID();
+  let state;
+  let last = performance.now();
+  let round = 1;
 
-const WIDTH = canvas.width;
-const HEIGHT = canvas.height;
+  const clamp =
+    (v, a, b) =>
+      Math.max(
+        a,
+        Math.min(b, v)
+      );
 
-const PLAYER_RADIUS = 18;
-const PLAYER_SPEED = 215;
+  const len =
+    (x, y) =>
+      Math.hypot(x, y);
 
-const BULLET_SPEED = 650;
-const BULLET_RADIUS = 5;
+  const dist =
+    (a, b) =>
+      Math.hypot(
+        a.x - b.x,
+        a.y - b.y
+      );
 
-const DAMAGE = 25;
-
-const SHOOT_COOLDOWN = 1;
-const HOOK_COOLDOWN = 2;
-
-const ROUND_TIME = 30;
-
-let roomCode = null;
-let isHost = false;
-let isBot = false;
-
-let roomUnsubscribe = null;
-let shotsUnsubscribe = null;
-
-let state = null;
-
-let lastSent = 0;
-let lastTimeSync = 0;
-let lastFrame = performance.now();
-
-const keys = {};
-
-const mouse = {
-    x: WIDTH / 2,
-    y: HEIGHT / 2
-};
-
-function setLobbyStatus(text) {
-    lobbyStatus.textContent = text;
-}
-
-function randomRoomCode() {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-    let code = "";
-
-    for (let i = 0; i < 6; i++) {
-        code += chars[
-            Math.floor(Math.random() * chars.length)
-        ];
-    }
-
-    return code;
-}
-
-function createState() {
+  function makePlayer(
+    x,
+    y,
+    color,
+    dir
+  ) {
     return {
-        mode: isBot ? "bot" : "online",
-
-        time: ROUND_TIME,
-
-        gameOver: false,
-
-        p1: {
-            x: 180,
-            y: HEIGHT / 2,
-            vx: 0,
-            vy: 0,
-            hp: 100,
-            r: PLAYER_RADIUS,
-            shootTimer: 0,
-            hookTimer: 0,
-            color: "#4da6ff"
-        },
-
-        p2: {
-            x: WIDTH - 180,
-            y: HEIGHT / 2,
-            vx: 0,
-            vy: 0,
-            hp: 100,
-            r: PLAYER_RADIUS,
-            shootTimer: 0,
-            hookTimer: 0,
-            color: "#ff4d5a"
-        },
-
-        bullets: [],
-        remoteBullets: [],
-
-        hook: {
-            active: false,
-            x: 0,
-            y: 0
-        },
-
-        remoteId: null
+      x,
+      y,
+      r: 17,
+      hp: 100,
+      color,
+      dir,
+      speed: 215,
+      cooldown: 0,
+      hurt: 0,
+      recoil: 0,
+      hookVx: 0,
+      hookVy: 0
     };
-}
+  }
 
-function startBot() {
-    cleanupListeners();
+  function reset() {
+    state = {
+      running: true,
 
-    roomCode = null;
-    isHost = true;
-    isBot = true;
+      time: 30,
 
-    state = createState();
+      bullets: [],
 
-    enemyName.textContent = "BOT";
+      particles: [],
 
-    lobby.classList.add("hidden");
-    overlay.classList.remove("show");
+      flash: 0,
 
-    statusElement.textContent = "FIGHT";
+      hook: {
+        active: false,
+        mode: null,
 
-    lastFrame = performance.now();
-}
+        x: 0,
+        y: 0,
 
-async function createRoom() {
-    setLobbyStatus("Создаём комнату...");
+        age: 0,
 
-    isBot = false;
-    isHost = true;
+        life: .62,
 
-    let code = null;
+        startX: 0,
+        startY: 0,
 
-    for (let i = 0; i < 20; i++) {
-        const candidate = randomRoomCode();
+        endX: 0,
+        endY: 0,
 
-        const snapshot = await get(
-            ref(db, `rooms/${candidate}`)
-        );
+        bend: [],
 
-        if (!snapshot.exists()) {
-            code = candidate;
-            break;
-        }
-    }
+        power: 0,
 
-    if (!code) {
-        setLobbyStatus("Не удалось создать комнату.");
-        return;
-    }
+        restLength: 0
+      },
 
-    roomCode = code;
+      hookCooldown: 0,
 
-    const player = {
-        x: 180,
-        y: HEIGHT / 2,
-        hp: 100,
-        r: PLAYER_RADIUS,
-        ready: true
+      aiFireClock: 0,
+
+      aiMoveClock: 0,
+
+      aiStrafe: 1,
+
+      p1:
+        makePlayer(
+          130,
+          H / 2,
+          '#67a7ff',
+          1
+        ),
+
+      p2:
+        makePlayer(
+          W - 130,
+          H / 2,
+          '#ff6d7f',
+          -1
+        )
     };
 
-    try {
-        await set(
-            ref(db, `rooms/${roomCode}`),
-            {
-                host: playerId,
-                guest: null,
-                status: "waiting",
-                time: ROUND_TIME,
-                winner: null,
-                createdAt: Date.now(),
+    mouse.x = W / 2;
+    mouse.y = H / 2;
 
-                players: {
-                    [playerId]: player
-                },
+    mouse.down = false;
 
-                shots: {}
-            }
-        );
-
-        onDisconnect(
-            ref(
-                db,
-                `rooms/${roomCode}/players/${playerId}`
-            )
-        ).remove();
-
-        createdRoom.classList.remove("hidden");
-
-        roomCodeElement.textContent = roomCode;
-
-        waitingText.textContent =
-            "Ждём второго игрока...";
-
-        setLobbyStatus(
-            "Комната создана. Отправь код другу."
-        );
-
-        listenRoom();
-        listenShots();
-
-    } catch (error) {
-        console.error(error);
-        setLobbyStatus("Ошибка создания комнаты.");
-    }
-}
-
-async function joinRoom() {
-    const code = joinCodeInput.value
-        .trim()
-        .toUpperCase();
-
-    if (code.length !== 6) {
-        setLobbyStatus(
-            "Код должен содержать 6 символов."
-        );
-        return;
-    }
-
-    setLobbyStatus("Проверяем комнату...");
-
-    const roomRef = ref(
-        db,
-        `rooms/${code}`
+    overlay.classList.remove(
+      'show'
     );
 
-    try {
-        const snapshot = await get(roomRef);
+    statusEl.textContent =
+      'ROUND ' + round;
 
-        if (!snapshot.exists()) {
-            setLobbyStatus("Комната не найдена.");
-            return;
-        }
+    updateHud();
+  }
 
-        const room = snapshot.val();
+  function arenaBounds(p) {
+    p.x =
+      clamp(
+        p.x,
+        42 + p.r,
+        W - 42 - p.r
+      );
 
-        if (room.host === playerId) {
-            setLobbyStatus("Нельзя войти в свою комнату.");
-            return;
-        }
+    p.y =
+      clamp(
+        p.y,
+        42 + p.r,
+        H - 42 - p.r
+      );
+  }
 
-        if (room.guest && room.guest !== playerId) {
-            setLobbyStatus("Комната уже заполнена.");
-            return;
-        }
-
-        if (room.status === "finished") {
-            setLobbyStatus("Комната уже завершена.");
-            return;
-        }
-
-        roomCode = code;
-        isHost = false;
-        isBot = false;
-
-        const player = {
-            x: WIDTH - 180,
-            y: HEIGHT / 2,
-            hp: 100,
-            r: PLAYER_RADIUS,
-            ready: true
-        };
-
-        await firebaseUpdate(
-            roomRef,
-            {
-                guest: playerId,
-                status: "playing",
-                time: ROUND_TIME,
-                winner: null,
-                [`players/${playerId}`]: player
-            }
-        );
-
-        onDisconnect(
-            ref(
-                db,
-                `rooms/${roomCode}/players/${playerId}`
-            )
-        ).remove();
-
-        state = createState();
-        state.remoteId = room.host;
-
-        enemyName.textContent = "OPPONENT";
-
-        lobby.classList.add("hidden");
-        overlay.classList.remove("show");
-
-        statusElement.textContent = "FIGHT";
-
-        listenRoom();
-        listenShots();
-
-        lastFrame = performance.now();
-
-    } catch (error) {
-        console.error(error);
-        setLobbyStatus(
-            "Ошибка входа в комнату."
-        );
-    }
-}
-
-function listenRoom() {
-    if (!roomCode) {
-        return;
-    }
-
-    if (roomUnsubscribe) {
-        roomUnsubscribe();
-        roomUnsubscribe = null;
-    }
-
-    roomUnsubscribe = onValue(
-        ref(db, `rooms/${roomCode}`),
-        snapshot => {
-            if (!snapshot.exists()) {
-                if (!isBot) {
-                    setLobbyStatus("Комната удалена.");
-                }
-
-                return;
-            }
-
-            const room = snapshot.val();
-
-            if (!state) {
-                if (room.status !== "playing") {
-                    return;
-                }
-
-                state = createState();
-            }
-
-            if (room.host) {
-                if (!isHost) {
-                    state.remoteId = room.host;
-                }
-            }
-
-            if (isHost && room.guest) {
-                state.remoteId = room.guest;
-
-                if (!lobby.classList.contains("hidden")) {
-                    lobby.classList.add("hidden");
-                }
-
-                enemyName.textContent = "OPPONENT";
-                statusElement.textContent = "FIGHT";
-            }
-
-            const players = room.players || {};
-
-            if (
-                state.remoteId &&
-                players[state.remoteId]
-            ) {
-                const remote = players[state.remoteId];
-
-                const remotePlayer = isHost
-                    ? state.p2
-                    : state.p1;
-
-                remotePlayer.x =
-                    typeof remote.x === "number"
-                        ? remote.x
-                        : remotePlayer.x;
-
-                remotePlayer.y =
-                    typeof remote.y === "number"
-                        ? remote.y
-                        : remotePlayer.y;
-
-                remotePlayer.hp =
-                    typeof remote.hp === "number"
-                        ? remote.hp
-                        : remotePlayer.hp;
-            }
-
-            if (!isHost && typeof room.time === "number") {
-                state.time = room.time;
-            }
-
-            if (room.status === "waiting") {
-                statusElement.textContent = "WAITING";
-                waitingText.textContent =
-                    "Ждём второго игрока...";
-            }
-
-            if (room.status === "playing") {
-                statusElement.textContent = "FIGHT";
-            }
-
-            if (
-                room.status === "finished" &&
-                !state.gameOver
-            ) {
-                state.gameOver = true;
-
-                if (room.winner === playerId) {
-                    showResult(
-                        "YOU WIN",
-                        "Ты победил!"
-                    );
-                } else if (room.winner) {
-                    showResult(
-                        "YOU LOSE",
-                        "Ты проиграл."
-                    );
-                } else {
-                    showResult(
-                        "DRAW",
-                        "Ничья."
-                    );
-                }
-            }
-        }
+  function canShoot(p) {
+    return (
+      p.cooldown <= 0 &&
+      state.running &&
+      p.hp > 0
     );
-}
+  }
 
-function listenShots() {
-    if (!roomCode) {
-        return;
+  function rayCircleDistance(
+    x,
+    y,
+    dx,
+    dy,
+    cx,
+    cy,
+    r
+  ) {
+    const ox =
+      x - cx;
+
+    const oy =
+      y - cy;
+
+    const b =
+      ox * dx +
+      oy * dy;
+
+    const c =
+      ox * ox +
+      oy * oy -
+      r * r;
+
+    const h =
+      b * b - c;
+
+    if (h < 0)
+      return Infinity;
+
+    const s =
+      Math.sqrt(h);
+
+    const t1 =
+      -b - s;
+
+    const t2 =
+      -b + s;
+
+    if (t1 > 0)
+      return t1;
+
+    if (t2 > 0)
+      return t2;
+
+    return Infinity;
+  }
+
+  function rayWallDistance(
+    x,
+    y,
+    dx,
+    dy
+  ) {
+    const left = 40;
+    const right = W - 40;
+    const top = 40;
+    const bottom = H - 40;
+
+    let t = Infinity;
+
+    if (dx < -.0001) {
+      t =
+        Math.min(
+          t,
+          (left - x) / dx
+        );
     }
 
-    if (shotsUnsubscribe) {
-        shotsUnsubscribe();
-        shotsUnsubscribe = null;
+    if (dx > .0001) {
+      t =
+        Math.min(
+          t,
+          (right - x) / dx
+        );
     }
 
-    shotsUnsubscribe = onValue(
-        ref(db, `rooms/${roomCode}/shots`),
-        snapshot => {
-            if (!state || isBot) {
-                return;
-            }
+    if (dy < -.0001) {
+      t =
+        Math.min(
+          t,
+          (top - y) / dy
+        );
+    }
 
-            const data = snapshot.val() || {};
-            const now = Date.now();
+    if (dy > .0001) {
+      t =
+        Math.min(
+          t,
+          (bottom - y) / dy
+        );
+    }
 
-            state.remoteBullets = Object.entries(data)
-                .filter(([, bullet]) => {
-                    return bullet.owner !== playerId;
-                })
-                .map(([id, bullet]) => ({
-                    id,
-                    x: bullet.x,
-                    y: bullet.y,
-                    vx: bullet.vx,
-                    vy: bullet.vy,
-                    owner: bullet.owner,
-                    life:
-                        1.6 -
-                        (now - bullet.createdAt) / 1000
-                }))
-                .filter(bullet => bullet.life > 0);
-        }
+    return Math.max(
+      0,
+      t
     );
-}
+  }
 
-function cleanupListeners() {
-    if (roomUnsubscribe) {
-        roomUnsubscribe();
-        roomUnsubscribe = null;
-    }
+  function buildHookBend(
+    sx,
+    sy,
+    ex,
+    ey
+  ) {
+    const dx =
+      ex - sx;
 
-    if (shotsUnsubscribe) {
-        shotsUnsubscribe();
-        shotsUnsubscribe = null;
-    }
-}
+    const dy =
+      ey - sy;
 
-async function sendPlayerState() {
-    if (
-        isBot ||
-        !roomCode ||
-        !state ||
-        state.gameOver
+    const d =
+      Math.max(
+        1,
+        Math.hypot(dx, dy)
+      );
+
+    const bendStrength =
+      clamp(
+        38 - d * .045,
+        5,
+        38
+      );
+
+    const count = 12;
+
+    const result = [];
+
+    for (
+      let i = 1;
+      i < count;
+      i++
     ) {
-        return;
-    }
+      const t =
+        i / count;
 
-    const now = performance.now();
-
-    if (now - lastSent < 40) {
-        return;
-    }
-
-    lastSent = now;
-
-    const player = isHost
-        ? state.p1
-        : state.p2;
-
-    try {
-        await firebaseUpdate(
-            ref(
-                db,
-                `rooms/${roomCode}/players/${playerId}`
-            ),
-            {
-                x: player.x,
-                y: player.y,
-                hp: player.hp,
-                r: player.r
-            }
+      const falloff =
+        Math.sin(
+          Math.PI * t
         );
-    } catch (error) {
-        console.error("Player sync:", error);
-    }
-}
 
-async function syncRoomTime() {
-    if (
-        !isHost ||
-        isBot ||
-        !roomCode ||
-        !state
+      result.push({
+        t,
+
+        offset:
+          (
+            Math.random() - .5
+          ) *
+          2 *
+          bendStrength *
+          falloff,
+
+        wave:
+          .55 +
+          Math.random() * 1.45,
+
+        phase:
+          Math.random() *
+          Math.PI *
+          2
+      });
+    }
+
+    return result;
+  }
+
+  function hookImpact(
+    x,
+    y,
+    kind
+  ) {
+    for (
+      let i = 0;
+      i < 18;
+      i++
     ) {
-        return;
-    }
+      const a =
+        Math.random() *
+        Math.PI *
+        2;
 
-    const now = performance.now();
+      const s =
+        80 +
+        Math.random() * 240;
 
-    if (now - lastTimeSync < 100) {
-        return;
-    }
-
-    lastTimeSync = now;
-
-    try {
-        await firebaseUpdate(
-            ref(db, `rooms/${roomCode}`),
-            {
-                time: Math.max(0, state.time)
-            }
-        );
-    } catch (error) {
-        console.error("Time sync:", error);
-    }
-}
-
-async function sendShot(bullet) {
-    if (
-        isBot ||
-        !roomCode
-    ) {
-        return;
-    }
-
-    const id =
-        `${playerId}_${Date.now()}_${Math.random()
-            .toString(36)
-            .slice(2)}`;
-
-    const shotRef = ref(
-        db,
-        `rooms/${roomCode}/shots/${id}`
-    );
-
-    try {
-        await set(
-            shotRef,
-            {
-                x: bullet.x,
-                y: bullet.y,
-                vx: bullet.vx,
-                vy: bullet.vy,
-                owner: playerId,
-                createdAt: Date.now()
-            }
-        );
-
-        setTimeout(() => {
-            remove(shotRef).catch(() => {});
-        }, 1600);
-
-    } catch (error) {
-        console.error("Shot sync:", error);
-    }
-}
-
-function shoot(player, targetX, targetY) {
-    if (!state || state.gameOver) {
-        return;
-    }
-
-    if (player.shootTimer > 0) {
-        return;
-    }
-
-    const dx = targetX - player.x;
-    const dy = targetY - player.y;
-
-    const distance =
-        Math.hypot(dx, dy) || 1;
-
-    const bullet = {
-        x: player.x,
-        y: player.y,
+      state.particles.push({
+        x,
+        y,
 
         vx:
-            dx /
-            distance *
-            BULLET_SPEED,
+          Math.cos(a) * s,
 
         vy:
-            dy /
-            distance *
-            BULLET_SPEED,
+          Math.sin(a) * s,
 
-        life: 1.6,
+        life:
+          .22 +
+          Math.random() * .32,
 
-        owner:
-            player === state.p1
-                ? 1
-                : 2
-    };
+        size:
+          2 +
+          Math.random() * 3
+      });
+    }
 
-    state.bullets.push(bullet);
+    state.flash =
+      kind === 'player'
+        ? .11
+        : .06;
+  }
 
-    player.shootTimer = SHOOT_COOLDOWN;
-
-    const local =
-        isBot
-            ? player === state.p1
-            : isHost
-                ? player === state.p1
-                : player === state.p2;
-
+  function launchHook(
+    targetX,
+    targetY
+  ) {
     if (
-        state.mode === "online" &&
-        local
+      !state.running ||
+      state.hookCooldown > 0 ||
+      state.p1.hp <= 0
     ) {
-        sendShot(bullet);
-    }
-}
-
-function useHook(player, targetX, targetY) {
-    if (!state || state.gameOver) {
-        return;
+      return;
     }
 
-    if (player.hookTimer > 0) {
-        return;
-    }
+    const p = state.p1;
 
-    const dx = targetX - player.x;
-    const dy = targetY - player.y;
+    let dx =
+      targetX - p.x;
 
-    const distance =
-        Math.hypot(dx, dy);
+    let dy =
+      targetY - p.y;
 
-    if (
-        distance <= 0 ||
-        distance > 500
-    ) {
-        player.hookTimer = HOOK_COOLDOWN;
-        return;
-    }
+    const d =
+      Math.max(
+        .001,
+        Math.hypot(dx, dy)
+      );
+
+    dx /= d;
+    dy /= d;
+
+    const wallT =
+      Math.min(
+        820,
+        rayWallDistance(
+          p.x,
+          p.y,
+          dx,
+          dy
+        )
+      );
+
+    const playerT =
+      rayCircleDistance(
+        p.x,
+        p.y,
+        dx,
+        dy,
+        state.p2.x,
+        state.p2.y,
+        state.p2.r + 6
+      );
+
+    const hitPlayer =
+      playerT <= wallT &&
+      playerT <= 820;
+
+    const hitT =
+      hitPlayer
+        ? playerT
+        : wallT;
+
+    const ex =
+      p.x + dx * hitT;
+
+    const ey =
+      p.y + dy * hitT;
+
+    const pullDistance =
+      Math.max(
+        40,
+        Math.min(
+          820,
+          hitT
+        )
+      );
+
+    state.hookCooldown = 2;
 
     state.hook.active = true;
 
-    state.hook.x = targetX;
-    state.hook.y = targetY;
+    state.hook.mode =
+      hitPlayer
+        ? 'player'
+        : 'wall';
 
-    player.hookTimer = HOOK_COOLDOWN;
+    state.hook.x = ex;
+    state.hook.y = ey;
 
-    const hookState = state;
+    state.hook.age = 0;
 
-    setTimeout(() => {
-        if (state === hookState) {
-            state.hook.active = false;
-        }
-    }, 300);
-}
+    state.hook.startX = p.x;
+    state.hook.startY = p.y;
 
-function updatePlayer(player, dt, local) {
+    state.hook.endX = ex;
+    state.hook.endY = ey;
+
+    state.hook.bend =
+      buildHookBend(
+        p.x,
+        p.y,
+        ex,
+        ey
+      );
+
+    state.hook.power =
+      clamp(
+        .9 +
+        Math.pow(
+          pullDistance / 360,
+          1.2
+        ),
+        1.05,
+        3.4
+      );
+
+    state.hook.restLength =
+      pullDistance;
+
+    if (hitPlayer) {
+      const t = state.p2;
+
+      const p0x = p.x;
+      const p0y = p.y;
+
+      const t0x = t.x;
+      const t0y = t.y;
+
+      const strength =
+        720 *
+        state.hook.power;
+
+      const tx =
+        t0x - p0x;
+
+      const ty =
+        t0y - p0y;
+
+      const td =
+        Math.max(
+          .001,
+          Math.hypot(tx, ty)
+        );
+
+      const ux =
+        tx / td;
+
+      const uy =
+        ty / td;
+
+      p.hookVx =
+        ux *
+        strength *
+        .86;
+
+      p.hookVy =
+        uy *
+        strength *
+        .86;
+
+      t.hookVx =
+        -ux *
+        strength *
+        1.04;
+
+      t.hookVy =
+        -uy *
+        strength *
+        1.04;
+
+      state.hook.endX = t0x;
+      state.hook.endY = t0y;
+
+      hookImpact(
+        t0x,
+        t0y,
+        'player'
+      );
+
+    } else {
+
+      const strength =
+        570 *
+        state.hook.power;
+
+      p.hookVx =
+        dx * strength;
+
+      p.hookVy =
+        dy * strength;
+
+      hookImpact(
+        ex,
+        ey,
+        'wall'
+      );
+    }
+  }
+
+  function updateHook(dt) {
+    state.hookCooldown =
+      Math.max(
+        0,
+        state.hookCooldown - dt
+      );
+
+    if (state.hook.active) {
+
+      state.hook.age += dt;
+
+      if (
+        state.hook.mode ===
+        'player'
+      ) {
+
+        state.hook.endX =
+          state.p2.x;
+
+        state.hook.endY =
+          state.p2.y;
+
+        const dx =
+          state.p2.x -
+          state.p1.x;
+
+        const dy =
+          state.p2.y -
+          state.p1.y;
+
+        const distance =
+          Math.max(
+            1,
+            Math.hypot(
+              dx,
+              dy
+            )
+          );
+
+        const ux =
+          dx / distance;
+
+        const uy =
+          dy / distance;
+
+        const stretch =
+          Math.max(
+            0,
+            distance -
+            state.hook.restLength *
+            .38
+          );
+
+        const spring =
+          Math.min(
+            1900,
+            stretch *
+            (
+              8.5 +
+              state.hook.power *
+              2.2
+            )
+          );
+
+        state.p1.hookVx +=
+          ux *
+          spring *
+          dt;
+
+        state.p1.hookVy +=
+          uy *
+          spring *
+          dt;
+
+        state.p2.hookVx -=
+          ux *
+          spring *
+          1.24 *
+          dt;
+
+        state.p2.hookVy -=
+          uy *
+          spring *
+          1.24 *
+          dt;
+
+      } else {
+
+        const dx =
+          state.hook.endX -
+          state.p1.x;
+
+        const dy =
+          state.hook.endY -
+          state.p1.y;
+
+        const distance =
+          Math.max(
+            1,
+            Math.hypot(
+              dx,
+              dy
+            )
+          );
+
+        const ux =
+          dx / distance;
+
+        const uy =
+          dy / distance;
+
+        const stretch =
+          Math.max(
+            0,
+            distance -
+            state.hook.restLength *
+            .28
+          );
+
+        const spring =
+          Math.min(
+            2200,
+            stretch *
+            (
+              10 +
+              state.hook.power *
+              2.6
+            )
+          );
+
+        state.p1.hookVx +=
+          ux *
+          spring *
+          dt;
+
+        state.p1.hookVy +=
+          uy *
+          spring *
+          dt;
+      }
+
+      if (
+        state.hook.age >=
+        state.hook.life
+      ) {
+        state.hook.active = false;
+      }
+    }
+
+    state.p1.hookVx *=
+      Math.exp(-1.35 * dt);
+
+    state.p1.hookVy *=
+      Math.exp(-1.35 * dt);
+
+    state.p2.hookVx *=
+      Math.exp(-1.35 * dt);
+
+    state.p2.hookVy *=
+      Math.exp(-1.35 * dt);
+
+    if (
+      Math.hypot(
+        state.p1.hookVx,
+        state.p1.hookVy
+      ) < 5
+    ) {
+      state.p1.hookVx = 0;
+      state.p1.hookVy = 0;
+    }
+
+    if (
+      Math.hypot(
+        state.p2.hookVx,
+        state.p2.hookVy
+      ) < 5
+    ) {
+      state.p2.hookVx = 0;
+      state.p2.hookVy = 0;
+    }
+  }
+
+  function shoot(
+    shooter,
+    targetX,
+    targetY
+  ) {
+    if (!canShoot(shooter))
+      return;
+
+    let dx =
+      targetX - shooter.x;
+
+    let dy =
+      targetY - shooter.y;
+
+    const d =
+      Math.max(
+        .001,
+        len(dx, dy)
+      );
+
+    dx /= d;
+    dy /= d;
+
+    shooter.dir =
+      dx >= 0 ? 1 : -1;
+
+    shooter.cooldown = 1;
+
+    shooter.recoil = .12;
+
+    state.bullets.push({
+
+      x:
+        shooter.x +
+        dx * 24,
+
+      y:
+        shooter.y +
+        dy * 24,
+
+      vx:
+        dx * 510,
+
+      vy:
+        dy * 510,
+
+      life: 1.6,
+
+      owner: shooter
+    });
+
+    for (
+      let i = 0;
+      i < 5;
+      i++
+    ) {
+      state.particles.push({
+
+        x:
+          shooter.x +
+          dx * 28,
+
+        y:
+          shooter.y +
+          dy * 28,
+
+        vx:
+          dx *
+          (
+            120 +
+            Math.random() * 120
+          ) +
+          (
+            Math.random() - .5
+          ) * 70,
+
+        vy:
+          dy *
+          (
+            120 +
+            Math.random() * 120
+          ) +
+          (
+            Math.random() - .5
+          ) * 70,
+
+        life:
+          .18 +
+          Math.random() * .16,
+
+        size:
+          2 +
+          Math.random() * 2
+      });
+    }
+  }
+
+  function damage(
+    target,
+    amount
+  ) {
+    if (
+      target === state.p2 &&
+      bonusState.damage > 0
+    ) {
+      amount +=
+        bonusState.damage;
+    }
+
+    target.hp =
+      Math.max(
+        0,
+        target.hp - amount
+      );
+
+    target.hurt = .14;
+
+    state.flash = .08;
+
+    for (
+      let i = 0;
+      i < 10;
+      i++
+    ) {
+
+      const a =
+        Math.random() *
+        Math.PI *
+        2;
+
+      state.particles.push({
+
+        x: target.x,
+        y: target.y,
+
+        vx:
+          Math.cos(a) *
+          (
+            90 +
+            Math.random() * 180
+          ),
+
+        vy:
+          Math.sin(a) *
+          (
+            90 +
+            Math.random() * 180
+          ),
+
+        life:
+          .25 +
+          Math.random() * .25,
+
+        size:
+          2 +
+          Math.random() * 2.5
+      });
+    }
+
+    updateHud();
+  }
+
+  function updatePlayer(dt) {
+
     let dx = 0;
     let dy = 0;
 
-    if (local) {
-        if (keys.w || keys.W || keys.ArrowUp) {
-            dy -= 1;
-        }
-
-        if (keys.s || keys.S || keys.ArrowDown) {
-            dy += 1;
-        }
-
-        if (keys.a || keys.A || keys.ArrowLeft) {
-            dx -= 1;
-        }
-
-        if (keys.d || keys.D || keys.ArrowRight) {
-            dx += 1;
-        }
-    }
-
-    if (dx !== 0 || dy !== 0) {
-        const distance =
-            Math.hypot(dx, dy);
-
-        dx /= distance;
-        dy /= distance;
-
-        player.vx = dx * PLAYER_SPEED;
-        player.vy = dy * PLAYER_SPEED;
-    } else {
-        const friction =
-            Math.pow(0.001, dt);
-
-        player.vx *= friction;
-        player.vy *= friction;
-    }
-
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
-
-    player.x = Math.max(
-        player.r,
-        Math.min(
-            WIDTH - player.r,
-            player.x
-        )
-    );
-
-    player.y = Math.max(
-        player.r,
-        Math.min(
-            HEIGHT - player.r,
-            player.y
-        )
-    );
-
-    player.shootTimer = Math.max(
-        0,
-        player.shootTimer - dt
-    );
-
-    player.hookTimer = Math.max(
-        0,
-        player.hookTimer - dt
-    );
-}
-
-function updateBot(dt) {
     if (
-        !state ||
-        !isBot ||
-        state.gameOver
+      keys.has('w') ||
+      keys.has('arrowup')
     ) {
-        return;
-    }
-
-    const bot = state.p2;
-    const player = state.p1;
-
-    const dx = player.x - bot.x;
-    const dy = player.y - bot.y;
-
-    const distance =
-        Math.hypot(dx, dy) || 1;
-
-    if (distance > 270) {
-        bot.vx =
-            dx / distance *
-            PLAYER_SPEED *
-            0.55;
-
-        bot.vy =
-            dy / distance *
-            PLAYER_SPEED *
-            0.55;
-    } else {
-        bot.vx *= 0.9;
-        bot.vy *= 0.9;
-    }
-
-    bot.x += bot.vx * dt;
-    bot.y += bot.vy * dt;
-
-    bot.x = Math.max(
-        bot.r,
-        Math.min(
-            WIDTH - bot.r,
-            bot.x
-        )
-    );
-
-    bot.y = Math.max(
-        bot.r,
-        Math.min(
-            HEIGHT - bot.r,
-            bot.y
-        )
-    );
-
-    bot.shootTimer = Math.max(
-        0,
-        bot.shootTimer - dt
-    );
-
-    bot.hookTimer = Math.max(
-        0,
-        bot.hookTimer - dt
-    );
-
-    if (
-        bot.shootTimer <= 0 &&
-        distance < 700
-    ) {
-        shoot(
-            bot,
-            player.x,
-            player.y
-        );
-    }
-}
-
-function updateBullets(dt) {
-    if (!state) {
-        return;
-    }
-
-    for (
-        let i = state.bullets.length - 1;
-        i >= 0;
-        i--
-    ) {
-        const bullet = state.bullets[i];
-
-        bullet.x += bullet.vx * dt;
-        bullet.y += bullet.vy * dt;
-        bullet.life -= dt;
-
-        if (
-            bullet.life <= 0 ||
-            bullet.x < -50 ||
-            bullet.x > WIDTH + 50 ||
-            bullet.y < -50 ||
-            bullet.y > HEIGHT + 50
-        ) {
-            state.bullets.splice(i, 1);
-            continue;
-        }
-
-        const target =
-            bullet.owner === 1
-                ? state.p2
-                : state.p1;
-
-        const distance =
-            Math.hypot(
-                bullet.x - target.x,
-                bullet.y - target.y
-            );
-
-        if (
-            distance <
-            target.r + BULLET_RADIUS
-        ) {
-            if (
-                state.mode === "online" &&
-                !isHost
-            ) {
-                state.bullets.splice(i, 1);
-                continue;
-            }
-
-            damage(target, DAMAGE);
-
-            state.bullets.splice(i, 1);
-        }
-    }
-
-    for (
-        let i = state.remoteBullets.length - 1;
-        i >= 0;
-        i--
-    ) {
-        const bullet =
-            state.remoteBullets[i];
-
-        bullet.x += bullet.vx * dt;
-        bullet.y += bullet.vy * dt;
-        bullet.life -= dt;
-
-        if (
-            bullet.life <= 0 ||
-            bullet.x < -50 ||
-            bullet.x > WIDTH + 50 ||
-            bullet.y < -50 ||
-            bullet.y > HEIGHT + 50
-        ) {
-            state.remoteBullets.splice(i, 1);
-            continue;
-        }
-
-        const localPlayer =
-            isHost
-                ? state.p1
-                : state.p2;
-
-        const distance =
-            Math.hypot(
-                bullet.x - localPlayer.x,
-                bullet.y - localPlayer.y
-            );
-
-        if (
-            distance <
-            localPlayer.r + BULLET_RADIUS
-        ) {
-            if (isHost) {
-                damage(
-                    localPlayer,
-                    DAMAGE
-                );
-            }
-
-            state.remoteBullets.splice(i, 1);
-        }
-    }
-}
-
-function damage(player, amount) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
-        return;
+      dy--;
     }
 
     if (
-        state.mode === "online" &&
-        !isHost
+      keys.has('s') ||
+      keys.has('arrowdown')
     ) {
-        return;
-    }
-
-    player.hp = Math.max(
-        0,
-        player.hp - amount
-    );
-
-    if (
-        state.mode === "online"
-    ) {
-        const localPlayer =
-            isHost
-                ? state.p1
-                : state.p2;
-
-        firebaseUpdate(
-            ref(
-                db,
-                `rooms/${roomCode}/players/${playerId}`
-            ),
-            {
-                hp: localPlayer.hp
-            }
-        ).catch(() => {});
-
-        if (state.remoteId) {
-            const remotePlayer =
-                isHost
-                    ? state.p2
-                    : state.p1;
-
-            firebaseUpdate(
-                ref(
-                    db,
-                    `rooms/${roomCode}/players/${state.remoteId}`
-                ),
-                {
-                    hp: remotePlayer.hp
-                }
-            ).catch(() => {});
-        }
-    }
-
-    checkEnd();
-}
-
-function checkEnd() {
-    if (
-        !state ||
-        state.gameOver
-    ) {
-        return;
-    }
-
-    let winner = null;
-
-    if (
-        state.p1.hp <= 0 ||
-        state.p2.hp <= 0
-    ) {
-        if (
-            state.p1.hp <= 0 &&
-            state.p2.hp <= 0
-        ) {
-            winner = null;
-        } else if (
-            state.p2.hp <= 0
-        ) {
-            winner = 1;
-        } else {
-            winner = 2;
-        }
+      dy++;
     }
 
     if (
-        winner !== null ||
-        state.time <= 0
+      keys.has('a') ||
+      keys.has('arrowleft')
     ) {
-        if (
-            state.time <= 0 &&
-            winner === null
-        ) {
-            if (state.p1.hp > state.p2.hp) {
-                winner = 1;
-            } else if (state.p2.hp > state.p1.hp) {
-                winner = 2;
-            }
-        }
-
-        if (state.mode === "online") {
-            if (isHost) {
-                finishOnline(
-                    winner === 1
-                        ? playerId
-                        : winner === 2
-                            ? state.remoteId
-                            : null
-                );
-            }
-
-            return;
-        }
-
-        finishLocal(
-            winner === 1
-                ? "YOU WIN"
-                : winner === 2
-                    ? "YOU LOSE"
-                    : "DRAW"
-        );
+      dx--;
     }
-}
 
-async function finishOnline(winnerId) {
     if (
-        !state ||
-        state.gameOver ||
-        !roomCode
+      keys.has('d') ||
+      keys.has('arrowright')
     ) {
-        return;
+      dx++;
     }
 
-    state.gameOver = true;
+    const d =
+      len(dx, dy) || 1;
 
-    try {
-        await firebaseUpdate(
-            ref(db, `rooms/${roomCode}`),
-            {
-                status: "finished",
-                winner: winnerId || null,
-                time: Math.max(0, state.time)
-            }
-        );
-    } catch (error) {
-        console.error("Finish error:", error);
-        state.gameOver = false;
-    }
-}
+    state.p1.x +=
+      dx / d *
+      state.p1.speed *
+      dt;
 
-function finishLocal(result) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
-        return;
-    }
+    state.p1.y +=
+      dy / d *
+      state.p1.speed *
+      dt;
 
-    state.gameOver = true;
+    state.p1.x +=
+      state.p1.hookVx *
+      dt;
 
-    if (result === "YOU WIN") {
-        showResult(
-            "YOU WIN",
-            "Ты победил!"
-        );
-    } else if (result === "YOU LOSE") {
-        showResult(
-            "YOU LOSE",
-            "Ты проиграл."
-        );
-    } else {
-        showResult(
-            "DRAW",
-            "Ничья."
-        );
-    }
-}
+    state.p1.y +=
+      state.p1.hookVy *
+      dt;
 
-function showResult(title, text) {
-    resultTitle.textContent = title;
-    resultText.textContent = text;
+    arenaBounds(
+      state.p1
+    );
 
-    overlay.classList.add("show");
-
-    statusElement.textContent = "FINISHED";
-}
-
-async function restartGame() {
-    if (!state) {
-        return;
-    }
-
-    if (isBot) {
-        startBot();
-        return;
-    }
-
-    if (!isHost || !roomCode) {
-        return;
-    }
-
-    try {
-        const snapshot = await get(
-            ref(db, `rooms/${roomCode}`)
-        );
-
-        if (!snapshot.exists()) {
-            backToLobby();
-            return;
-        }
-
-        const room = snapshot.val();
-
-        if (!room.guest) {
-            setLobbyStatus(
-                "Второй игрок вышел."
-            );
-            return;
-        }
-
-        state = createState();
-        state.remoteId = room.guest;
-
-        overlay.classList.remove("show");
-        statusElement.textContent = "FIGHT";
-
-        await firebaseUpdate(
-            ref(db, `rooms/${roomCode}`),
-            {
-                status: "playing",
-                time: ROUND_TIME,
-                winner: null,
-
-                [`players/${playerId}`]: {
-                    x: 180,
-                    y: HEIGHT / 2,
-                    hp: 100,
-                    r: PLAYER_RADIUS,
-                    ready: true
-                },
-
-                [`players/${room.guest}`]: {
-                    x: WIDTH - 180,
-                    y: HEIGHT / 2,
-                    hp: 100,
-                    r: PLAYER_RADIUS,
-                    ready: true
-                },
-
-                shots: {}
-            }
-        );
-
-    } catch (error) {
-        console.error("Restart error:", error);
-    }
-}
-
-function backToLobby() {
-    const oldRoom = roomCode;
-
-    cleanupListeners();
-
-    if (oldRoom) {
-        remove(
-            ref(
-                db,
-                `rooms/${oldRoom}/players/${playerId}`
-            )
-        ).catch(() => {});
-    }
-
-    state = null;
-    roomCode = null;
-    isBot = false;
-    isHost = false;
-
-    overlay.classList.remove("show");
-
-    createdRoom.classList.add("hidden");
-
-    joinCodeInput.value = "";
-
-    roomCodeElement.textContent = "------";
-
-    waitingText.textContent =
-        "Ждём второго игрока...";
-
-    statusElement.textContent = "WAITING";
-
-    timeElement.textContent = "30.0";
-
-    p1HpText.textContent = "100";
-    p2HpText.textContent = "100";
-
-    p1Health.style.width = "100%";
-    p2Health.style.width = "100%";
-
-    enemyName.textContent = "OPPONENT";
-
-    setLobbyStatus("");
-
-    lobby.classList.remove("hidden");
-}
-
-function gameUpdate(dt) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
-        return;
-    }
-
-    state.time = Math.max(
+    state.p1.cooldown =
+      Math.max(
         0,
-        state.time - dt
-    );
+        state.p1.cooldown - dt
+      );
 
-    const localPlayer =
-        isBot || isHost
-            ? state.p1
-            : state.p2;
-
-    updatePlayer(
-        localPlayer,
-        dt,
-        true
-    );
-
-    if (isBot) {
-        updateBot(dt);
-    }
-
-    updateBullets(dt);
-
-    if (state.mode === "online") {
-        sendPlayerState();
-
-        if (isHost) {
-            syncRoomTime();
-        }
-    }
-
-    checkEnd();
-}
-
-function drawBackground() {
-    ctx.fillStyle = "#080a0f";
-
-    ctx.fillRect(
+    state.p1.hurt =
+      Math.max(
         0,
+        state.p1.hurt - dt
+      );
+
+    state.p1.recoil =
+      Math.max(
         0,
-        WIDTH,
-        HEIGHT
-    );
+        state.p1.recoil - dt
+      );
 
-    ctx.strokeStyle =
-        "rgba(255,255,255,.035)";
-
-    ctx.lineWidth = 1;
-
-    for (
-        let x = 0;
-        x <= WIDTH;
-        x += 40
-    ) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, HEIGHT);
-        ctx.stroke();
+    if (mouse.down) {
+      shoot(
+        state.p1,
+        mouse.x,
+        mouse.y
+      );
     }
+  }
 
-    for (
-        let y = 0;
-        y <= HEIGHT;
-        y += 40
-    ) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(WIDTH, y);
-        ctx.stroke();
-    }
+  function updateBot(dt) {
 
-    ctx.strokeStyle =
-        "rgba(255,255,255,.12)";
+    const b = state.p2;
+    const p = state.p1;
 
-    ctx.strokeRect(
-        1,
-        1,
-        WIDTH - 2,
-        HEIGHT - 2
-    );
-}
-
-function drawPlayer(player) {
-    ctx.beginPath();
-
-    ctx.arc(
-        player.x,
-        player.y,
-        player.r,
+    b.cooldown =
+      Math.max(
         0,
-        Math.PI * 2
-    );
+        b.cooldown - dt
+      );
 
-    ctx.fillStyle = player.color;
-    ctx.fill();
-
-    ctx.beginPath();
-
-    ctx.arc(
-        player.x,
-        player.y,
-        player.r + 4,
+    b.hurt =
+      Math.max(
         0,
-        Math.PI * 2
-    );
+        b.hurt - dt
+      );
 
-    ctx.strokeStyle =
-        "rgba(255,255,255,.12)";
-
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    ctx.beginPath();
-
-    ctx.arc(
-        player.x,
-        player.y,
-        4,
+    b.recoil =
+      Math.max(
         0,
-        Math.PI * 2
-    );
+        b.recoil - dt
+      );
 
-    ctx.fillStyle = "#fff";
-    ctx.fill();
-}
+    b.x +=
+      b.hookVx * dt;
 
-function drawBullets() {
-    if (!state) {
-        return;
-    }
-
-    for (const bullet of state.bullets) {
-        ctx.beginPath();
-
-        ctx.arc(
-            bullet.x,
-            bullet.y,
-            BULLET_RADIUS,
-            0,
-            Math.PI * 2
-        );
-
-        ctx.fillStyle =
-            bullet.owner === 1
-                ? "#65b5ff"
-                : "#ff626d";
-
-        ctx.fill();
-    }
-
-    for (const bullet of state.remoteBullets) {
-        ctx.beginPath();
-
-        ctx.arc(
-            bullet.x,
-            bullet.y,
-            BULLET_RADIUS,
-            0,
-            Math.PI * 2
-        );
-
-        ctx.fillStyle = "#ff626d";
-        ctx.fill();
-    }
-}
-
-function drawHook() {
-    if (
-        !state ||
-        !state.hook.active
-    ) {
-        return;
-    }
-
-    const player =
-        isBot || isHost
-            ? state.p1
-            : state.p2;
-
-    ctx.beginPath();
-
-    ctx.moveTo(
-        player.x,
-        player.y
-    );
-
-    ctx.lineTo(
-        state.hook.x,
-        state.hook.y
-    );
-
-    ctx.strokeStyle =
-        "rgba(255,255,255,.65)";
-
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.beginPath();
-
-    ctx.arc(
-        state.hook.x,
-        state.hook.y,
-        7,
-        0,
-        Math.PI * 2
-    );
-
-    ctx.strokeStyle = "#fff";
-    ctx.stroke();
-}
-
-function drawAim() {
-    if (!state) {
-        return;
-    }
-
-    const player =
-        isBot || isHost
-            ? state.p1
-            : state.p2;
+    b.y +=
+      b.hookVy * dt;
 
     const dx =
-        mouse.x - player.x;
+      p.x - b.x;
 
     const dy =
-        mouse.y - player.y;
+      p.y - b.y;
 
-    const distance =
-        Math.hypot(dx, dy) || 1;
+    const d =
+      Math.max(
+        1,
+        len(dx, dy)
+      );
 
-    const endX =
-        player.x +
-        dx / distance *
-        45;
+    state.aiMoveClock -= dt;
 
-    const endY =
-        player.y +
-        dy / distance *
-        45;
+    if (
+      state.aiMoveClock <= 0
+    ) {
+
+      state.aiMoveClock =
+        .7 +
+        Math.random() * .9;
+
+      state.aiStrafe *= -1;
+    }
+
+    const desired =
+      d > 360
+        ? 1
+        : d < 235
+          ? -1
+          : 0;
+
+    let mx =
+      dx / d *
+      desired +
+      (-dy / d) *
+      state.aiStrafe *
+      .72;
+
+    let my =
+      dy / d *
+      desired +
+      (dx / d) *
+      state.aiStrafe *
+      .72;
+
+    const ml =
+      len(mx, my) || 1;
+
+    b.x +=
+      mx / ml *
+      b.speed *
+      .72 *
+      dt;
+
+    b.y +=
+      my / ml *
+      b.speed *
+      .72 *
+      dt;
+
+    arenaBounds(b);
+
+    state.aiFireClock -= dt;
+
+    if (
+      state.aiFireClock <= 0 &&
+      d < 620
+    ) {
+
+      state.aiFireClock =
+        .32 +
+        Math.random() * .38;
+
+      shoot(
+        b,
+        p.x +
+        (
+          Math.random() - .5
+        ) * 20,
+
+        p.y +
+        (
+          Math.random() - .5
+        ) * 20
+      );
+    }
+  }
+
+  function updateBullets(dt) {
+
+    for (
+      let i =
+        state.bullets.length - 1;
+
+      i >= 0;
+
+      i--
+    ) {
+
+      const b =
+        state.bullets[i];
+
+      b.x +=
+        b.vx * dt;
+
+      b.y +=
+        b.vy * dt;
+
+      b.life -= dt;
+
+      if (
+        b.life <= 0 ||
+        b.x < 0 ||
+        b.y < 0 ||
+        b.x > W ||
+        b.y > H
+      ) {
+
+        state.bullets.splice(
+          i,
+          1
+        );
+
+        continue;
+      }
+
+      const target =
+        b.owner === state.p1
+          ? state.p2
+          : state.p1;
+
+      if (
+        dist(b, target) <=
+        target.r + 5
+      ) {
+
+        damage(
+          target,
+          25
+        );
+
+        state.bullets.splice(
+          i,
+          1
+        );
+      }
+    }
+  }
+
+  function updateParticles(dt) {
+
+    for (
+      let i =
+        state.particles.length - 1;
+
+      i >= 0;
+
+      i--
+    ) {
+
+      const p =
+        state.particles[i];
+
+      p.x +=
+        p.vx * dt;
+
+      p.y +=
+        p.vy * dt;
+
+      p.vx *= .92;
+      p.vy *= .92;
+
+      p.life -= dt;
+
+      if (
+        p.life <= 0
+      ) {
+
+        state.particles.splice(
+          i,
+          1
+        );
+      }
+    }
+  }
+
+  function finish(
+    text,
+    title
+  ) {
+    state.running = false;
+
+    resultTitle.textContent =
+      title;
+
+    resultText.textContent =
+      text;
+
+    overlay.classList.add(
+      'show'
+    );
+  }
+
+  function checkEnd() {
+
+    if (
+      state.p1.hp <= 0 &&
+      state.p2.hp <= 0
+    ) {
+
+      finish(
+        'Оба игрока потеряли всё HP.',
+        'DRAW'
+      );
+
+      return true;
+    }
+
+    if (
+      state.p2.hp <= 0
+    ) {
+
+      finish(
+        'BOT выбыл из раунда.',
+        'YOU WIN'
+      );
+
+      return true;
+    }
+
+    if (
+      state.p1.hp <= 0
+    ) {
+
+      finish(
+        'Твой персонаж выбыл из раунда.',
+        'YOU LOSE'
+      );
+
+      return true;
+    }
+
+    if (
+      state.time <= 0
+    ) {
+
+      if (
+        state.p1.hp ===
+        state.p2.hp
+      ) {
+
+        finish(
+          'Время вышло — одинаковое HP.',
+          'DRAW'
+        );
+
+      } else if (
+        state.p1.hp >
+        state.p2.hp
+      ) {
+
+        finish(
+          'Время вышло — у тебя осталось больше HP.',
+          'YOU WIN'
+        );
+
+      } else {
+
+        finish(
+          'Время вышло — у BOT осталось больше HP.',
+          'YOU LOSE'
+        );
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
+  function updateHud() {
+
+    p1HpText.textContent =
+      Math.ceil(
+        state.p1.hp
+      );
+
+    p2HpText.textContent =
+      Math.ceil(
+        state.p2.hp
+      );
+
+    p1Health.style.width =
+      state.p1.hp + '%';
+
+    p2Health.style.width =
+      state.p2.hp + '%';
+
+    timeEl.textContent =
+      state.time.toFixed(1);
+  }
+
+  function drawGrid() {
+
+    ctx.fillStyle =
+      '#0b1017';
+
+    ctx.fillRect(
+      0,
+      0,
+      W,
+      H
+    );
+
+    ctx.strokeStyle =
+      'rgba(125,150,190,.08)';
+
+    ctx.lineWidth = 1;
+
+    for (
+      let x = 0;
+      x <= W;
+      x += 48
+    ) {
+
+      ctx.beginPath();
+
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+
+      ctx.stroke();
+    }
+
+    for (
+      let y = 0;
+      y <= H;
+      y += 48
+    ) {
+
+      ctx.beginPath();
+
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle =
+      'rgba(145,165,195,.28)';
+
+    ctx.lineWidth = 2;
+
+    ctx.strokeRect(
+      40,
+      40,
+      W - 80,
+      H - 80
+    );
+
+    ctx.setLineDash([
+      7,
+      9
+    ]);
+
+    ctx.strokeStyle =
+      'rgba(145,165,195,.14)';
 
     ctx.beginPath();
 
     ctx.moveTo(
-        player.x,
-        player.y
+      W / 2,
+      40
     );
 
     ctx.lineTo(
-        endX,
-        endY
+      W / 2,
+      H - 40
+    );
+
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+
+    ctx.fillStyle =
+      'rgba(145,165,195,.055)';
+
+    ctx.beginPath();
+
+    ctx.arc(
+      W / 2,
+      H / 2,
+      95,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fill();
+
+    ctx.strokeStyle =
+      'rgba(145,165,195,.12)';
+
+    ctx.beginPath();
+
+    ctx.arc(
+      W / 2,
+      H / 2,
+      95,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.stroke();
+  }
+
+  function drawPlayer(p) {
+
+    ctx.save();
+
+    ctx.translate(
+      p.x,
+      p.y
+    );
+
+    const a =
+      Math.atan2(
+        (
+          p === state.p1
+            ? mouse.y
+            : p2TargetY()
+        ) - p.y,
+
+        (
+          p === state.p1
+            ? mouse.x
+            : p2TargetX()
+        ) - p.x
+      );
+
+    const recoil =
+      p.recoil > 0
+        ? -p.recoil * 45
+        : 0;
+
+    ctx.rotate(a);
+
+    ctx.fillStyle =
+      '#161c25';
+
+    ctx.fillRect(
+      10 + recoil,
+      -4,
+      20,
+      8
+    );
+
+    ctx.restore();
+
+    ctx.save();
+
+    ctx.beginPath();
+
+    ctx.arc(
+      p.x,
+      p.y,
+      p.r,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fillStyle =
+      p.hurt > 0
+        ? '#ffffff'
+        : p.color;
+
+    ctx.shadowColor =
+      p.color;
+
+    ctx.shadowBlur = 18;
+
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+
+    ctx.lineWidth = 3;
+
+    ctx.strokeStyle =
+      'rgba(255,255,255,.65)';
+
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function p2TargetX() {
+    return state.p1.x;
+  }
+
+  function p2TargetY() {
+    return state.p1.y;
+  }
+
+  function drawBullets() {
+
+    for (
+      const b of state.bullets
+    ) {
+
+      ctx.save();
+
+      ctx.translate(
+        b.x,
+        b.y
+      );
+
+      ctx.rotate(
+        Math.atan2(
+          b.vy,
+          b.vx
+        )
+      );
+
+      ctx.fillStyle =
+        b.owner === state.p1
+          ? '#9fc6ff'
+          : '#ffb1bb';
+
+      ctx.shadowColor =
+        ctx.fillStyle;
+
+      ctx.shadowBlur = 12;
+
+      ctx.fillRect(
+        -7,
+        -2,
+        14,
+        4
+      );
+
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+
+    for (
+      const p of state.particles
+    ) {
+
+      ctx.globalAlpha =
+        clamp(
+          p.life * 3,
+          0,
+          1
+        );
+
+      ctx.fillStyle =
+        '#f4f7fb';
+
+      ctx.fillRect(
+        p.x,
+        p.y,
+        p.size,
+        p.size
+      );
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCrosshair() {
+
+    if (!state.running)
+      return;
+
+    ctx.save();
+
+    ctx.translate(
+      mouse.x,
+      mouse.y
     );
 
     ctx.strokeStyle =
-        "rgba(255,255,255,.18)";
+      state.p1.cooldown <= 0
+        ? 'rgba(255,255,255,.8)'
+        : 'rgba(255,255,255,.25)';
 
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.5;
+
+    ctx.beginPath();
+
+    ctx.arc(
+      0,
+      0,
+      7,
+      0,
+      Math.PI * 2
+    );
+
     ctx.stroke();
-}
 
-function render() {
-    drawBackground();
+    ctx.beginPath();
 
-    if (!state) {
-        return;
+    ctx.moveTo(-12, 0);
+    ctx.lineTo(-6, 0);
+
+    ctx.moveTo(6, 0);
+    ctx.lineTo(12, 0);
+
+    ctx.moveTo(0, -12);
+    ctx.lineTo(0, -6);
+
+    ctx.moveTo(0, 6);
+    ctx.lineTo(0, 12);
+
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawHook() {
+
+    if (!state.hook.active)
+      return;
+
+    const h =
+      state.hook;
+
+    const life =
+      clamp(
+        1 -
+        h.age / h.life,
+        0,
+        1
+      );
+
+    const dx =
+      h.endX - h.startX;
+
+    const dy =
+      h.endY - h.startY;
+
+    const d =
+      Math.max(
+        1,
+        Math.hypot(
+          dx,
+          dy
+        )
+      );
+
+    const nx =
+      -dy / d;
+
+    const ny =
+      dx / d;
+
+    const sway =
+      Math.sin(
+        h.age * 8
+      ) *
+      Math.min(
+        4.5,
+        2.2 +
+        h.power * 1.1
+      );
+
+    const points = [
+      {
+        x: h.startX,
+        y: h.startY
+      }
+    ];
+
+    for (
+      const b of h.bend
+    ) {
+
+      const wave =
+        Math.sin(
+          h.age *
+          (
+            4 +
+            b.wave * 2
+          ) +
+          b.phase
+        ) *
+        sway *
+        Math.sin(
+          Math.PI * b.t
+        );
+
+      points.push({
+
+        x:
+          h.startX +
+          dx * b.t +
+          nx *
+          (
+            b.offset +
+            wave
+          ),
+
+        y:
+          h.startY +
+          dy * b.t +
+          ny *
+          (
+            b.offset +
+            wave
+          )
+      });
     }
+
+    points.push({
+      x: h.endX,
+      y: h.endY
+    });
+
+    function traceRope() {
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        points[0].x,
+        points[0].y
+      );
+
+      for (
+        let i = 1;
+        i < points.length - 1;
+        i++
+      ) {
+
+        const current =
+          points[i];
+
+        const next =
+          points[i + 1];
+
+        const midX =
+          (
+            current.x +
+            next.x
+          ) * .5;
+
+        const midY =
+          (
+            current.y +
+            next.y
+          ) * .5;
+
+        ctx.quadraticCurveTo(
+          current.x,
+          current.y,
+          midX,
+          midY
+        );
+      }
+
+      const last =
+        points[
+          points.length - 1
+        ];
+
+      const prev =
+        points[
+          points.length - 2
+        ];
+
+      ctx.quadraticCurveTo(
+        prev.x,
+        prev.y,
+        last.x,
+        last.y
+      );
+    }
+
+    ctx.save();
+
+    ctx.lineCap =
+      'round';
+
+    ctx.lineJoin =
+      'round';
+
+    ctx.globalAlpha =
+      life * .25;
+
+    ctx.strokeStyle =
+      '#b8c6dc';
+
+    ctx.lineWidth = 8;
+
+    ctx.shadowColor =
+      '#a7bfe8';
+
+    ctx.shadowBlur = 7;
+
+    traceRope();
+
+    ctx.stroke();
+
+    ctx.globalAlpha = life;
+
+    ctx.strokeStyle =
+      '#d8e1ed';
+
+    ctx.lineWidth = 2.6;
+
+    ctx.shadowBlur = 2;
+
+    traceRope();
+
+    ctx.stroke();
+
+    ctx.fillStyle =
+      '#f3f6fb';
+
+    ctx.shadowBlur = 8;
+
+    ctx.beginPath();
+
+    ctx.arc(
+      h.endX,
+      h.endY,
+      5.5,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function render() {
+
+    drawGrid();
 
     drawHook();
+
     drawBullets();
 
-    drawPlayer(state.p1);
-    drawPlayer(state.p2);
+    drawParticles();
 
-    drawAim();
+    drawPlayer(
+      state.p1
+    );
 
-    p1HpText.textContent =
-        Math.ceil(
-            Math.max(
-                0,
-                state.p1.hp
-            )
+    drawPlayer(
+      state.p2
+    );
+
+    drawCrosshair();
+
+    if (
+      state.flash > 0
+    ) {
+
+      ctx.fillStyle =
+        'rgba(255,255,255,' +
+        state.flash * 2 +
+        ')';
+
+      ctx.fillRect(
+        0,
+        0,
+        W,
+        H
+      );
+    }
+  }
+
+  function canvasPoint(e) {
+
+    const r =
+      canvas.getBoundingClientRect();
+
+    return {
+
+      x:
+        (
+          e.clientX -
+          r.left
+        ) *
+        W /
+        r.width,
+
+      y:
+        (
+          e.clientY -
+          r.top
+        ) *
+        H /
+        r.height
+    };
+  }
+
+  window.addEventListener(
+    'keydown',
+    e => {
+
+      const k =
+        e.key.toLowerCase();
+
+      if (
+        [
+          'w',
+          'a',
+          's',
+          'd',
+          'arrowup',
+          'arrowdown',
+          'arrowleft',
+          'arrowright'
+        ].includes(k)
+      ) {
+        e.preventDefault();
+      }
+
+      keys.add(k);
+    }
+  );
+
+  window.addEventListener(
+    'keyup',
+    e => {
+
+      keys.delete(
+        e.key.toLowerCase()
+      );
+    }
+  );
+
+  canvas.addEventListener(
+    'mousemove',
+    e => {
+
+      const p =
+        canvasPoint(e);
+
+      mouse.x = p.x;
+      mouse.y = p.y;
+    }
+  );
+
+  canvas.addEventListener(
+    'mousedown',
+    e => {
+
+      if (
+        e.button === 0
+      ) {
+
+        mouse.down = true;
+
+        const p =
+          canvasPoint(e);
+
+        mouse.x = p.x;
+        mouse.y = p.y;
+
+        shoot(
+          state.p1,
+          mouse.x,
+          mouse.y
+        );
+      }
+
+      if (
+        e.button === 2
+      ) {
+
+        e.preventDefault();
+
+        const p =
+          canvasPoint(e);
+
+        mouse.x = p.x;
+        mouse.y = p.y;
+
+        launchHook(
+          mouse.x,
+          mouse.y
+        );
+      }
+    }
+  );
+
+  window.addEventListener(
+    'mouseup',
+    e => {
+
+      if (
+        e.button === 0
+      ) {
+        mouse.down = false;
+      }
+    }
+  );
+
+  canvas.addEventListener(
+    'mouseleave',
+    () => {
+      mouse.down = false;
+    }
+  );
+
+  canvas.addEventListener(
+    'contextmenu',
+    e => {
+      e.preventDefault();
+    }
+  );
+
+  restartBtn.addEventListener(
+    'click',
+    () => {
+
+      round++;
+
+      reset();
+    }
+  );
+
+  const bonusOverlay =
+    document.createElement(
+      'div'
+    );
+
+  bonusOverlay.id =
+    'bonusOverlay';
+
+  bonusOverlay.innerHTML = `
+    <div id="bonusPanel">
+
+      <h2 id="bonusTitle">
+        ВЫБЕРИ УСИЛИТЕЛЬ
+      </h2>
+
+      <div id="bonusSubtitle">
+        Время остановлено. Выбери один бонус.
+      </div>
+
+      <div id="bonusCards"></div>
+
+    </div>
+  `;
+
+  document.body.appendChild(
+    bonusOverlay
+  );
+
+  bonusOverlay.style.display =
+    'none';
+
+  const bonusCards =
+    document.getElementById(
+      'bonusCards'
+    );
+
+  const bonusState = {
+
+    nextTime: 20,
+
+    paused: false,
+
+    damage: 0,
+
+    fireCooldown: 1,
+
+    bulletSpeed: 510
+  };
+
+  const bonusPool = [
+
+    {
+      name:
+        'Усиленный урон',
+
+      icon:
+        '✦',
+
+      desc:
+        '+10 урона каждой твоей пулей.',
+
+      apply: () => {
+
+        bonusState.damage +=
+          10;
+      }
+    },
+
+    {
+      name:
+        'Быстрая стрельба',
+
+      icon:
+        '⚡',
+
+      desc:
+        'Кулдаун твоего пистолета уменьшается на 0.25 сек.',
+
+      apply: () => {
+
+        bonusState.fireCooldown =
+          Math.max(
+            .25,
+            bonusState.fireCooldown -
+            .25
+          );
+      }
+    },
+
+    {
+      name:
+        'Скорость',
+
+      icon:
+        '➤',
+
+      desc:
+        '+30 к скорости движения.',
+
+      apply: () => {
+
+        state.p1.speed +=
+          30;
+      }
+    },
+
+    {
+      name:
+        'Ремкомплект',
+
+      icon:
+        '♥',
+
+      desc:
+        'Восстанавливает 30 HP прямо сейчас.',
+
+      apply: () => {
+
+        state.p1.hp =
+          Math.min(
+            100,
+            state.p1.hp + 30
+          );
+      }
+    },
+
+    {
+      name:
+        'Манёвренность',
+
+      icon:
+        '◉',
+
+      desc:
+        'Радиус игрока уменьшается на 3 — по тебе труднее попасть.',
+
+      apply: () => {
+
+        state.p1.r =
+          Math.max(
+            11,
+            state.p1.r - 3
+          );
+      }
+    },
+
+    {
+      name:
+        'Мощный выстрел',
+
+      icon:
+        '●',
+
+      desc:
+        '+120 к скорости полёта твоих пуль.',
+
+      apply: () => {
+
+        bonusState.bulletSpeed +=
+          120;
+      }
+    }
+  ];
+
+  const baseReset =
+    reset;
+
+  reset = function() {
+
+    baseReset();
+
+    bonusState.nextTime =
+      20;
+
+    bonusState.paused =
+      false;
+
+    bonusState.damage =
+      0;
+
+    bonusState.fireCooldown =
+      1;
+
+    bonusState.bulletSpeed =
+      510;
+
+    bonusOverlay.style.display =
+      'none';
+  };
+
+  const baseDamage =
+    damage;
+
+  damage = function(
+    target,
+    amount
+  ) {
+
+    if (
+      target === state.p2 &&
+      bonusState.damage > 0
+    ) {
+
+      amount +=
+        bonusState.damage;
+    }
+
+    baseDamage(
+      target,
+      amount
+    );
+  };
+
+  const baseShoot =
+    shoot;
+
+  shoot = function(
+    shooter,
+    targetX,
+    targetY
+  ) {
+
+    const before =
+      state.bullets.length;
+
+    baseShoot(
+      shooter,
+      targetX,
+      targetY
+    );
+
+    if (
+      shooter === state.p1 &&
+      state.bullets.length >
+      before
+    ) {
+
+      const bullet =
+        state.bullets[
+          state.bullets.length - 1
+        ];
+
+      const factor =
+        bonusState.bulletSpeed /
+        510;
+
+      bullet.vx *= factor;
+      bullet.vy *= factor;
+
+      shooter.cooldown =
+        bonusState.fireCooldown;
+    }
+  };
+
+  function openBonusChoice() {
+
+    if (
+      !state.running ||
+      bonusState.paused
+    ) {
+      return;
+    }
+
+    bonusState.paused = true;
+
+    state.running = false;
+
+    statusEl.textContent =
+      'CHOOSE BONUS';
+
+    bonusCards.innerHTML = '';
+
+    const choices =
+      [...bonusPool]
+        .sort(
+          () =>
+            Math.random() - .5
+        )
+        .slice(0, 3);
+
+    choices.forEach(
+      bonus => {
+
+        const card =
+          document.createElement(
+            'button'
+          );
+
+        card.className =
+          'bonusCard';
+
+        card.innerHTML =
+          '<div class="bonusIcon">' +
+          bonus.icon +
+          '</div>' +
+
+          '<div class="bonusName">' +
+          bonus.name +
+          '</div>' +
+
+          '<div class="bonusDesc">' +
+          bonus.desc +
+          '</div>';
+
+        card.addEventListener(
+          'click',
+          () => {
+
+            bonus.apply();
+
+            bonusState.nextTime -=
+              10;
+
+            bonusState.paused =
+              false;
+
+            state.running =
+              true;
+
+            statusEl.textContent =
+              'ROUND ' + round;
+
+            bonusOverlay.style.display =
+              'none';
+
+            updateHud();
+          },
+          {
+            once: true
+          }
         );
 
-    p2HpText.textContent =
-        Math.ceil(
-            Math.max(
-                0,
-                state.p2.hp
-            )
+        bonusCards.appendChild(
+          card
         );
+      }
+    );
 
-    p1Health.style.width =
-        `${Math.max(
-            0,
-            state.p1.hp
-        )}%`;
+    bonusOverlay.style.display =
+      'flex';
+  }
 
-    p2Health.style.width =
-        `${Math.max(
-            0,
-            state.p2.hp
-        )}%`;
+  function frame(now) {
 
-    timeElement.textContent =
-        state.time.toFixed(1);
-}
-
-function frame(now) {
     const dt =
-        Math.min(
-            0.05,
-            (now - lastFrame) / 1000
+      Math.min(
+        .033,
+        (now - last) / 1000
+      );
+
+    last = now;
+
+    if (
+      state &&
+      state.running
+    ) {
+
+      state.time =
+        Math.max(
+          0,
+          state.time - dt
         );
 
-    lastFrame = now;
+      state.flash =
+        Math.max(
+          0,
+          state.flash - dt
+        );
 
-    gameUpdate(dt);
+      updatePlayer(dt);
+
+      updateBot(dt);
+
+      updateHook(dt);
+
+      updateBullets(dt);
+
+      updateParticles(dt);
+
+      checkEnd();
+
+      updateHud();
+
+      if (
+        state.running &&
+        !bonusState.paused &&
+        state.time <=
+        bonusState.nextTime &&
+        bonusState.nextTime > 0
+      ) {
+        openBonusChoice();
+      }
+    }
+
     render();
 
-    requestAnimationFrame(frame);
-}
+    requestAnimationFrame(
+      frame
+    );
+  }
 
-canvas.addEventListener(
-    "mousemove",
-    event => {
-        const rect =
-            canvas.getBoundingClientRect();
+  reset();
 
-        mouse.x =
-            (event.clientX - rect.left) *
-            WIDTH /
-            rect.width;
+  requestAnimationFrame(
+    frame
+  );
 
-        mouse.y =
-            (event.clientY - rect.top) *
-            HEIGHT /
-            rect.height;
-    }
-);
-
-canvas.addEventListener(
-    "mousedown",
-    event => {
-        if (!state || state.gameOver) {
-            return;
-        }
-
-        const player =
-            isBot || isHost
-                ? state.p1
-                : state.p2;
-
-        if (event.button === 0) {
-            shoot(
-                player,
-                mouse.x,
-                mouse.y
-            );
-        }
-
-        if (event.button === 2) {
-            useHook(
-                player,
-                mouse.x,
-                mouse.y
-            );
-        }
-    }
-);
-
-canvas.addEventListener(
-    "contextmenu",
-    event => {
-        event.preventDefault();
-    }
-);
-
-window.addEventListener(
-    "keydown",
-    event => {
-        keys[event.key] = true;
-
-        if (
-            [
-                "w",
-                "W",
-                "a",
-                "A",
-                "s",
-                "S",
-                "d",
-                "D",
-                "ArrowUp",
-                "ArrowDown",
-                "ArrowLeft",
-                "ArrowRight",
-                " "
-            ].includes(event.key)
-        ) {
-            event.preventDefault();
-        }
-    }
-);
-
-window.addEventListener(
-    "keyup",
-    event => {
-        keys[event.key] = false;
-    }
-);
-
-createRoomButton.addEventListener(
-    "click",
-    createRoom
-);
-
-joinRoomButton.addEventListener(
-    "click",
-    joinRoom
-);
-
-playBotButton.addEventListener(
-    "click",
-    startBot
-);
-
-copyCodeButton.addEventListener(
-    "click",
-    async () => {
-        if (!roomCode) {
-            return;
-        }
-
-        try {
-            await navigator.clipboard.writeText(
-                roomCode
-            );
-
-            waitingText.textContent =
-                "Код скопирован!";
-        } catch {
-            waitingText.textContent =
-                `Код: ${roomCode}`;
-        }
-    }
-);
-
-joinCodeInput.addEventListener(
-    "input",
-    () => {
-        joinCodeInput.value =
-            joinCodeInput.value
-                .toUpperCase()
-                .replace(
-                    /[^A-Z0-9]/g,
-                    ""
-                )
-                .slice(0, 6);
-    }
-);
-
-joinCodeInput.addEventListener(
-    "keydown",
-    event => {
-        if (event.key === "Enter") {
-            joinRoom();
-        }
-    }
-);
-
-restartButton.addEventListener(
-    "click",
-    restartGame
-);
-
-backToLobbyButton.addEventListener(
-    "click",
-    backToLobby
-);
-
-window.addEventListener(
-    "beforeunload",
-    () => {
-        if (roomCode) {
-            remove(
-                ref(
-                    db,
-                    `rooms/${roomCode}/players/${playerId}`
-                )
-            ).catch(() => {});
-        }
-    }
-);
-
-requestAnimationFrame(frame);
-
-console.log("Duel Arena loaded");
+})();
