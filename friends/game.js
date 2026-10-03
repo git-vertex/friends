@@ -3,7 +3,7 @@ let getDatabase;
 let ref;
 let set;
 let get;
-let update;
+let dbUpdate;
 let onValue;
 let onDisconnect;
 let remove;
@@ -115,7 +115,7 @@ async function loadFirebase() {
         ref = firebaseDatabase.ref;
         set = firebaseDatabase.set;
         get = firebaseDatabase.get;
-        update = firebaseDatabase.update;
+        dbUpdate = firebaseDatabase.update;
         onValue = firebaseDatabase.onValue;
         onDisconnect = firebaseDatabase.onDisconnect;
         remove = firebaseDatabase.remove;
@@ -435,7 +435,7 @@ async function joinRoom() {
             ready: true
         };
 
-        await update(
+        await dbUpdate(
             roomRef,
             {
                 guest: playerId,
@@ -745,7 +745,7 @@ async function sendPlayerState() {
             : state.p2;
 
     try {
-        await update(
+        await dbUpdate(
             ref(
                 db,
                 `rooms/${roomCode}/players/${playerId}`
@@ -790,7 +790,7 @@ async function syncRoomTime() {
     lastTimeSync = now;
 
     try {
-        await update(
+        await dbUpdate(
             ref(
                 db,
                 `rooms/${roomCode}`
@@ -1322,7 +1322,7 @@ function damage(
                 ? state.p1
                 : state.p2;
 
-        update(
+        dbUpdate(
             ref(
                 db,
                 `rooms/${roomCode}/players/${playerId}`
@@ -1341,7 +1341,7 @@ function damage(
                     ? state.p2
                     : state.p1;
 
-            update(
+            dbUpdate(
                 ref(
                     db,
                     `rooms/${roomCode}/players/${state.remoteId}`
@@ -1448,7 +1448,7 @@ async function finishOnline(
     state.gameOver = true;
 
     try {
-        await update(
+        await dbUpdate(
             ref(
                 db,
                 `rooms/${roomCode}`
@@ -1590,7 +1590,7 @@ async function restartGame() {
         statusElement.textContent =
             "FIGHT";
 
-        await update(
+        await dbUpdate(
             ref(
                 db,
                 `rooms/${roomCode}`
@@ -2182,8 +2182,7 @@ function frame(now) {
     const dt =
         Math.min(
             0.05,
-            (now - lastFrame) /
-                1000
+            (now - lastFrame) / 1000
         );
 
     lastFrame = now;
@@ -2191,9 +2190,7 @@ function frame(now) {
     update(dt);
     render();
 
-    requestAnimationFrame(
-        frame
-    );
+    requestAnimationFrame(frame);
 }
 
 canvas.addEventListener(
