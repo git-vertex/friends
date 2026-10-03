@@ -1,106 +1,244 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Duel Arena</title>
-<link rel="stylesheet" href="style.css">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Duel Arena</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
 
-<div id="app">
-  <main class="shell">
+<div id="menu">
 
-    <section class="topbar">
+    <div class="menu-grid"></div>
+    <div class="menu-glow blue-glow"></div>
+    <div class="menu-glow red-glow"></div>
 
-      <div class="player-card">
-        <span class="dot blue"></span>
+    <div class="menu-content">
 
-        <div>
-          <div class="name">YOU</div>
-          <div class="label">
-            HP <span id="p1HpText">100</span>
-          </div>
-
-          <div class="health">
-            <div id="p1Health"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="timer">
-        <div id="time">30.0</div>
-        <div id="status">ROUND 1</div>
-      </div>
-
-      <div class="player-card right">
-
-        <div>
-          <div class="name">BOT</div>
-
-          <div class="label">
-            HP <span id="p2HpText">100</span>
-          </div>
-
-          <div class="health">
-            <div id="p2Health"></div>
-          </div>
+        <div class="logo">
+            <div class="logo-top">ONLINE 1V1</div>
+            <h1>DUEL <span>ARENA</span></h1>
+            <div class="logo-bottom">FAST COMBAT</div>
         </div>
 
-        <span class="dot red"></span>
+        <div id="mainMenu" class="menu-section">
 
-      </div>
+            <button id="createServer" class="menu-button primary">
+                <span class="button-icon">+</span>
+                CREATE SERVER
+            </button>
 
-    </section>
-
-    <section class="arena-wrap">
-
-      <canvas
-        id="game"
-        width="960"
-        height="540"
-      ></canvas>
-
-      <div class="overlay" id="overlay">
-
-        <div class="result">
-
-          <h1 id="resultTitle">TIME</h1>
-
-          <p id="resultText">
-            Раунд завершён
-          </p>
-
-          <button id="restart">
-            Новый раунд
-          </button>
+            <button id="joinServer" class="menu-button">
+                <span class="button-icon">→</span>
+                JOIN SERVER
+            </button>
 
         </div>
 
-      </div>
+        <div id="joinMenu" class="menu-section hidden">
 
-    </section>
+            <div class="section-title">JOIN SERVER</div>
 
-    <div class="hint">
+            <input
+                id="roomCodeInput"
+                class="room-input"
+                type="text"
+                maxlength="6"
+                placeholder="ENTER CODE"
+                autocomplete="off"
+            >
 
-      <div>
-        <span class="kbd">WASD</span>
-        движение · мышь — прицел ·
-        <span class="kbd">ЛКМ</span>
-        стрелять
-      </div>
+            <button id="joinButton" class="menu-button primary">
+                JOIN
+            </button>
 
-      <div>
-        Выстрел: 1с · Хук: 2с · Раунд: 30с
-      </div>
+            <button id="backFromJoin" class="small-button">
+                BACK
+            </button>
+
+        </div>
+
+        <div id="roomMenu" class="menu-section hidden">
+
+            <div class="section-title">SERVER CREATED</div>
+
+            <div class="code-label">ROOM CODE</div>
+
+            <div id="roomCode" class="room-code">
+                ------
+            </div>
+
+            <button id="copyCode" class="small-button">
+                COPY CODE
+            </button>
+
+            <div class="players-box">
+
+                <div class="players-title">
+                    PLAYERS
+                </div>
+
+                <div class="player-slot">
+                    <span class="player-dot blue"></span>
+                    <span id="player1Name">YOU</span>
+                    <span class="player-state">HOST</span>
+                </div>
+
+                <div class="player-slot">
+                    <span class="player-dot red"></span>
+                    <span id="player2Name">WAITING...</span>
+                    <span id="player2State" class="player-state">EMPTY</span>
+                </div>
+
+            </div>
+
+            <div id="roomStatus" class="room-status">
+                Waiting for another player...
+            </div>
+
+            <button id="startGame" class="menu-button primary disabled" disabled>
+                START GAME
+            </button>
+
+            <button id="leaveRoom" class="small-button danger">
+                LEAVE
+            </button>
+
+        </div>
+
+        <div id="errorMessage" class="error-message"></div>
+
+        <div class="menu-version">
+            DUEL ARENA · MULTIPLAYER
+        </div>
 
     </div>
-
-  </main>
 </div>
 
-<script src="game.js"></script>
+
+<div id="gameContainer" class="hidden">
+
+    <main class="shell">
+
+        <section class="topbar">
+
+            <div class="player-card">
+
+                <span class="dot blue"></span>
+
+                <div>
+                    <div class="name">YOU</div>
+
+                    <div class="label">
+                        HP <span id="p1HpText">100</span>
+                    </div>
+
+                    <div class="health">
+                        <div id="p1Health"></div>
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div class="timer">
+
+                <div id="time">
+                    30.0
+                </div>
+
+                <div id="status">
+                    WAITING
+                </div>
+
+            </div>
+
+
+            <div class="player-card right">
+
+                <div>
+
+                    <div class="name">
+                        OPPONENT
+                    </div>
+
+                    <div class="label">
+                        HP <span id="p2HpText">100</span>
+                    </div>
+
+                    <div class="health">
+                        <div id="p2Health"></div>
+                    </div>
+
+                </div>
+
+                <span class="dot red"></span>
+
+            </div>
+
+        </section>
+
+
+        <section class="arena-wrap">
+
+            <canvas
+                id="game"
+                width="960"
+                height="540"
+            ></canvas>
+
+
+            <div id="gameOverlay" class="overlay">
+
+                <div class="result">
+
+                    <h1 id="resultTitle">
+                        ROUND OVER
+                    </h1>
+
+                    <p id="resultText">
+                        Round finished
+                    </p>
+
+                    <button id="backToMenu">
+                        BACK TO MENU
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <div class="hint">
+
+            <div>
+                <span class="kbd">WASD</span>
+                MOVE
+                ·
+                <span class="kbd">LMB</span>
+                SHOOT
+                ·
+                <span class="kbd">RMB</span>
+                HOOK
+            </div>
+
+            <div>
+                ROUND 30s
+            </div>
+
+        </div>
+
+    </main>
+
+</div>
+
+
+<script type="module" src="menu.js"></script>
+<script type="module" src="game.js"></script>
 
 </body>
 </html>
