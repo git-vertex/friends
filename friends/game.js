@@ -2,16 +2,16 @@ import {
     ref,
     onValue,
     update,
-    set,
     push,
     onChildAdded,
-    remove,
-    onDisconnect
+    remove
 } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
 
 
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", {
+    alpha: false
+});
 
 const timeEl = document.getElementById("time");
 const statusEl = document.getElementById("status");
@@ -31,7 +31,6 @@ const p2Health = document.getElementById("p2Health");
 const W = canvas.width;
 const H = canvas.height;
 
-
 const keys = new Set();
 
 const mouse = {
@@ -50,13 +49,18 @@ let db = null;
 let started = false;
 let gameOver = false;
 
-let last = performance.now();
+let lastFrame = performance.now();
 
 let roomUnsubscribe = null;
-let playerUnsubscribe = null;
 let opponentUnsubscribe = null;
 let shotUnsubscribe = null;
 
+let networkTimer = 0;
+let shotTimer = 0;
+let hookTimer = 0;
+
+let gameStartTime = 0;
+let remoteGameStartTime = 0;
 
 let localPlayer = null;
 let opponent = null;
@@ -64,21 +68,35 @@ let opponent = null;
 let bullets = [];
 let particles = [];
 
+let remoteBullets = [];
 
-let lastNetworkUpdate = 0;
-let lastShot = 0;
-let lastHook = 0;
+let pendingDamage = 0;
 
-let hostLastTime = 0;
-let hostEndProcessed = false;
+let lastSentX = 0;
+let lastSentY = 0;
+let lastSentAngle = 0;
+let lastSentHp = 100;
 
+let lastRemoteX = 0;
+let lastRemoteY = 0;
+let lastRemoteAngle = 0;
 
-const arena = {
+let opponentTarget = {
     x: 0,
     y: 0,
-    w: W,
-    h: H
+    angle: 0,
+    hp: 100
 };
+
+
+const PLAYER_SPEED = 280;
+const BULLET_SPEED = 820;
+const FIRE_COOLDOWN = 700;
+const HOOK_COOLDOWN = 2000;
+
+const NETWORK_RATE = 1 / 15;
+
+const ROUND_TIME = 30;
 
 
 function clamp(value, min, max) {
@@ -86,32 +104,37 @@ function clamp(value, min, max) {
 }
 
 
-function length(x, y) {
-    return Math.hypot(x, y);
-}
-
-
 function normalize(x, y) {
 
-    const l = Math.hypot(x, y);
+    const length = Math.hypot(x, y);
 
-    if (l === 0) {
-        return { x: 0, y: 0 };
+    if (length <= 0.0001) {
+        return {
+            x: 0,
+            y: 0
+        };
     }
 
     return {
-        x: x / l,
-        y: y / l
+        x: x / length,
+        y: y / length
     };
-
 }
 
 
-function distance(a, b) {
-    return Math.hypot(
-        a.x - b.x,
-        a.y - b.y
-    );
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
+
+function angleLerp(a, b, t) {
+
+    let difference =
+        ((b - a + Math.PI) %
+            (Math.PI * 2)) -
+        Math.PI;
+
+    return a + difference * t;
 }
 
 
@@ -127,90 +150,38 @@ function createPlayer(x, y, color) {
 
         radius: 16,
 
-        speed: 260,
+        speed: PLAYER_SPEED,
 
         hp: 100,
-
         maxHp: 100,
 
         color,
 
         angle: 0,
 
-        fireCooldown: 700,
+        fireCooldown: FIRE_COOLDOWN,
 
-        hookCooldown: 2000,
+        hookCooldown: HOOK_COOLDOWN,
 
         hook: {
-
             active: false,
-
-            x: x,
-
-            y: y,
-
+            x,
+            y,
             life: 0,
-
-            maxLife: .65
-
+            maxLife: .62
         }
 
     };
-
 }
 
 
-function resetLocalPlayer() {
-
-    if (!localPlayer) {
-        return;
-    }
-
-
-    if (isHost) {
-
-        localPlayer.x = 130;
-        localPlayer.y = H / 2;
-
-    } else {
-
-        localPlayer.x = W - 130;
-        localPlayer.y = H / 2;
-
-    }
-
-
-    localPlayer.vx = 0;
-    localPlayer.vy = 0;
-
-    localPlayer.hp = 100;
-
-    localPlayer.angle = isHost
-        ? 0
-        : Math.PI;
-
-    localPlayer.hook.active = false;
-
-}
-
-
-function resetOpponent() {
-
-    opponent = createPlayer(
-        isHost ? W - 130 : 130,
-        H / 2,
-        "#ff6d7f"
-    );
-
-    opponent.hp = 100;
-
-}
-
-
-function resetGameState() {
+function resetGame() {
 
     bullets = [];
     particles = [];
+    remoteBullets = [];
+
+    pendingDamage = 0;
 
     localPlayer = createPlayer(
         isHost ? 130 : W - 130,
@@ -224,8 +195,25 @@ function resetGameState() {
         "#ff6d7f"
     );
 
-    localPlayer.angle = isHost ? 0 : Math.PI;
-    opponent.angle = isHost ? Math.PI : 0;
+    localPlayer.angle =
+        isHost ? 0 : Math.PI;
+
+    opponent.angle =
+        isHost ? Math.PI : 0;
+
+    opponentTarget.x = opponent.x;
+    opponentTarget.y = opponent.y;
+    opponentTarget.angle = opponent.angle;
+    opponentTarget.hp = 100;
+
+    lastSentX = localPlayer.x;
+    lastSentY = localPlayer.y;
+    lastSentAngle = localPlayer.angle;
+    lastSentHp = 100;
+
+    lastRemoteX = opponent.x;
+    lastRemoteY = opponent.y;
+    lastRemoteAngle = opponent.angle;
 
     gameOver = false;
 
@@ -234,6 +222,7 @@ function resetGameState() {
     statusEl.textContent =
         isHost ? "HOST" : "PLAYER 2";
 
+    updateHud();
 }
 
 
@@ -246,14 +235,13 @@ function canvasPoint(event) {
 
         x:
             (event.clientX - rect.left) *
-            (W / rect.width),
+            W / rect.width,
 
         y:
             (event.clientY - rect.top) *
-            (H / rect.height)
+            H / rect.height
 
     };
-
 }
 
 
@@ -263,74 +251,123 @@ function updateAim() {
         return;
     }
 
-    const dx =
-        mouse.x - localPlayer.x;
-
-    const dy =
-        mouse.y - localPlayer.y;
-
     localPlayer.angle =
-        Math.atan2(dy, dx);
-
+        Math.atan2(
+            mouse.y - localPlayer.y,
+            mouse.x - localPlayer.x
+        );
 }
 
 
-function movePlayer(dt) {
+function updateMovement(dt) {
 
     if (!localPlayer || gameOver) {
         return;
     }
 
 
-    let x = 0;
-    let y = 0;
+    let moveX = 0;
+    let moveY = 0;
 
 
     if (
         keys.has("w") ||
         keys.has("arrowup")
     ) {
-        y -= 1;
+        moveY -= 1;
     }
 
     if (
         keys.has("s") ||
         keys.has("arrowdown")
     ) {
-        y += 1;
+        moveY += 1;
     }
 
     if (
         keys.has("a") ||
         keys.has("arrowleft")
     ) {
-        x -= 1;
+        moveX -= 1;
     }
 
     if (
         keys.has("d") ||
         keys.has("arrowright")
     ) {
-        x += 1;
+        moveX += 1;
     }
 
 
-    const dir =
-        normalize(x, y);
+    const direction =
+        normalize(
+            moveX,
+            moveY
+        );
 
 
     localPlayer.vx =
-        dir.x * localPlayer.speed;
+        direction.x *
+        localPlayer.speed;
 
     localPlayer.vy =
-        dir.y * localPlayer.speed;
+        direction.y *
+        localPlayer.speed;
 
 
     localPlayer.x +=
-        localPlayer.vx * dt;
+        localPlayer.vx *
+        dt;
 
     localPlayer.y +=
-        localPlayer.vy * dt;
+        localPlayer.vy *
+        dt;
+
+
+    if (
+        localPlayer.hook.active
+    ) {
+
+        const dx =
+            localPlayer.hook.x -
+            localPlayer.x;
+
+        const dy =
+            localPlayer.hook.y -
+            localPlayer.y;
+
+        const distance =
+            Math.hypot(dx, dy);
+
+
+        if (distance > 15) {
+
+            const hookDirection =
+                normalize(
+                    dx,
+                    dy
+                );
+
+            const pull =
+                650 *
+                dt;
+
+            localPlayer.x +=
+                hookDirection.x *
+                pull;
+
+            localPlayer.y +=
+                hookDirection.y *
+                pull;
+
+        } else {
+
+            localPlayer.hook.active =
+                false;
+
+        }
+
+    }
 
 
     localPlayer.x =
@@ -347,59 +384,51 @@ function movePlayer(dt) {
             H - localPlayer.radius
         );
 
-
-    if (localPlayer.hook.active) {
-
-        localPlayer.x +=
-            (localPlayer.hook.x - localPlayer.x) *
-            dt * 7;
-
-        localPlayer.y +=
-            (localPlayer.hook.y - localPlayer.y) *
-            dt * 7;
-
-    }
-
 }
 
 
 function shoot() {
 
-    if (!localPlayer || gameOver) {
+    if (
+        !started ||
+        gameOver ||
+        !localPlayer
+    ) {
         return;
     }
 
 
-    const now = performance.now();
+    const now =
+        performance.now();
 
 
     if (
-        now - lastShot <
+        now - shotTimer <
         localPlayer.fireCooldown
     ) {
         return;
     }
 
 
-    lastShot = now;
+    shotTimer = now;
 
 
-    const dir = {
+    const dx =
+        Math.cos(localPlayer.angle);
 
-        x: Math.cos(localPlayer.angle),
-
-        y: Math.sin(localPlayer.angle)
-
-    };
+    const dy =
+        Math.sin(localPlayer.angle);
 
 
     const startX =
         localPlayer.x +
-        dir.x * (localPlayer.radius + 5);
+        dx *
+        (localPlayer.radius + 7);
 
     const startY =
         localPlayer.y +
-        dir.y * (localPlayer.radius + 5);
+        dy *
+        (localPlayer.radius + 7);
 
 
     bullets.push({
@@ -408,11 +437,11 @@ function shoot() {
 
         y: startY,
 
-        vx: dir.x * 760,
+        vx: dx * BULLET_SPEED,
 
-        vy: dir.y * 760,
+        vy: dy * BULLET_SPEED,
 
-        life: 1.2,
+        life: 1.15,
 
         owner: playerId,
 
@@ -432,8 +461,8 @@ function shoot() {
     sendShot(
         startX,
         startY,
-        dir.x,
-        dir.y
+        dx,
+        dy
     );
 
 }
@@ -446,7 +475,11 @@ async function sendShot(
     dy
 ) {
 
-    if (!roomId || !db) {
+    if (
+        !roomId ||
+        !db ||
+        !playerId
+    ) {
         return;
     }
 
@@ -464,10 +497,11 @@ async function sendShot(
 
                 x,
                 y,
+
                 dx,
                 dy,
 
-                time: Date.now()
+                timestamp: Date.now()
 
             }
         );
@@ -475,7 +509,7 @@ async function sendShot(
     } catch (error) {
 
         console.error(
-            "Shot sync error:",
+            "Shot:",
             error
         );
 
@@ -486,7 +520,10 @@ async function sendShot(
 
 function launchHook() {
 
-    if (!localPlayer || gameOver) {
+    if (
+        !localPlayer ||
+        gameOver
+    ) {
         return;
     }
 
@@ -496,80 +533,88 @@ function launchHook() {
 
 
     if (
-        now - lastHook <
-        localPlayer.hookCooldown
+        now - hookTimer <
+        HOOK_COOLDOWN
     ) {
         return;
     }
 
 
-    lastHook = now;
+    hookTimer = now;
 
 
-    const dx =
-        mouse.x - localPlayer.x;
-
-    const dy =
-        mouse.y - localPlayer.y;
-
-
-    const dir =
-        normalize(dx, dy);
-
-
-    let distanceToWall = 250;
-
-
-    if (dir.x > 0) {
-        distanceToWall =
-            Math.min(
-                distanceToWall,
-                (W - localPlayer.x) / dir.x
-            );
-    }
-
-    if (dir.x < 0) {
-        distanceToWall =
-            Math.min(
-                distanceToWall,
-                -localPlayer.x / dir.x
-            );
-    }
-
-    if (dir.y > 0) {
-        distanceToWall =
-            Math.min(
-                distanceToWall,
-                (H - localPlayer.y) / dir.y
-            );
-    }
-
-    if (dir.y < 0) {
-        distanceToWall =
-            Math.min(
-                distanceToWall,
-                -localPlayer.y / dir.y
-            );
-    }
-
-
-    distanceToWall =
-        clamp(
-            distanceToWall,
-            60,
-            360
+    const direction =
+        normalize(
+            mouse.x - localPlayer.x,
+            mouse.y - localPlayer.y
         );
 
 
-    localPlayer.hook.active = true;
+    let maxDistance = 400;
+
+
+    if (direction.x > 0) {
+
+        maxDistance =
+            Math.min(
+                maxDistance,
+                (W - localPlayer.x) /
+                direction.x
+            );
+
+    } else if (direction.x < 0) {
+
+        maxDistance =
+            Math.min(
+                maxDistance,
+                -localPlayer.x /
+                direction.x
+            );
+
+    }
+
+
+    if (direction.y > 0) {
+
+        maxDistance =
+            Math.min(
+                maxDistance,
+                (H - localPlayer.y) /
+                direction.y
+            );
+
+    } else if (direction.y < 0) {
+
+        maxDistance =
+            Math.min(
+                maxDistance,
+                -localPlayer.y /
+                direction.y
+            );
+
+    }
+
+
+    maxDistance =
+        clamp(
+            maxDistance,
+            70,
+            400
+        );
+
+
+    localPlayer.hook.active =
+        true;
 
     localPlayer.hook.x =
         localPlayer.x +
-        dir.x * distanceToWall;
+        direction.x *
+        maxDistance;
 
     localPlayer.hook.y =
         localPlayer.y +
-        dir.y * distanceToWall;
+        direction.y *
+        maxDistance;
 
     localPlayer.hook.life =
         localPlayer.hook.maxLife;
@@ -579,24 +624,24 @@ function launchHook() {
 
 function updateHook(dt) {
 
-    if (!localPlayer) {
+    if (
+        !localPlayer ||
+        !localPlayer.hook.active
+    ) {
         return;
     }
 
 
-    if (!localPlayer.hook.active) {
-        return;
-    }
-
-
-    localPlayer.hook.life -= dt;
+    localPlayer.hook.life -=
+        dt;
 
 
     if (
         localPlayer.hook.life <= 0
     ) {
 
-        localPlayer.hook.active = false;
+        localPlayer.hook.active =
+            false;
 
         return;
 
@@ -612,33 +657,42 @@ function updateHook(dt) {
         localPlayer.y;
 
 
-    const d =
-        Math.hypot(dx, dy);
+    const distance =
+        Math.hypot(
+            dx,
+            dy
+        );
 
 
-    if (d < 20) {
+    if (distance < 18) {
 
-        localPlayer.hook.active = false;
+        localPlayer.hook.active =
+            false;
 
         return;
 
     }
 
 
-    const dir = {
+    const direction =
+        normalize(
+            dx,
+            dy
+        );
 
-        x: dx / d,
 
-        y: dy / d
-
-    };
+    const hookSpeed = 620;
 
 
     localPlayer.x +=
-        dir.x * 520 * dt;
+        direction.x *
+        hookSpeed *
+        dt;
 
     localPlayer.y +=
-        dir.y * 520 * dt;
+        direction.y *
+        hookSpeed *
+        dt;
 
 
     localPlayer.x =
@@ -666,24 +720,28 @@ function updateBullets(dt) {
         i--
     ) {
 
-        const bullet = bullets[i];
+        const bullet =
+            bullets[i];
 
 
         bullet.x +=
-            bullet.vx * dt;
+            bullet.vx *
+            dt;
 
         bullet.y +=
-            bullet.vy * dt;
+            bullet.vy *
+            dt;
 
-        bullet.life -= dt;
+        bullet.life -=
+            dt;
 
 
         if (
             bullet.life <= 0 ||
-            bullet.x < -20 ||
-            bullet.x > W + 20 ||
-            bullet.y < -20 ||
-            bullet.y > H + 20
+            bullet.x < -30 ||
+            bullet.x > W + 30 ||
+            bullet.y < -30 ||
+            bullet.y > H + 30
         ) {
 
             bullets.splice(i, 1);
@@ -698,23 +756,61 @@ function updateBullets(dt) {
             localPlayer
         ) {
 
-            const d =
+            const distance =
                 Math.hypot(
-                    bullet.x - localPlayer.x,
-                    bullet.y - localPlayer.y
+                    bullet.x -
+                    localPlayer.x,
+
+                    bullet.y -
+                    localPlayer.y
                 );
 
 
             if (
-                d <
+                distance <
                 localPlayer.radius + 4
             ) {
 
                 bullets.splice(i, 1);
 
-                takeDamage(10);
+                applyDamage(
+                    10
+                );
 
             }
+
+        }
+
+    }
+
+
+    for (
+        let i = remoteBullets.length - 1;
+        i >= 0;
+        i--
+    ) {
+
+        const bullet =
+            remoteBullets[i];
+
+
+        bullet.x +=
+            bullet.vx *
+            dt;
+
+        bullet.y +=
+            bullet.vy *
+            dt;
+
+        bullet.life -=
+            dt;
+
+
+        if (
+            bullet.life <= 0
+        ) {
+
+            remoteBullets.splice(i, 1);
 
         }
 
@@ -723,42 +819,56 @@ function updateBullets(dt) {
 }
 
 
-function takeDamage(amount) {
+function applyDamage(amount) {
 
-    if (!localPlayer || gameOver) {
+    if (
+        !localPlayer ||
+        gameOver
+    ) {
         return;
     }
 
 
     localPlayer.hp =
         clamp(
-            localPlayer.hp - amount,
+            localPlayer.hp -
+            amount,
             0,
-            localPlayer.maxHp
+            100
         );
+
+
+    pendingDamage +=
+        amount;
 
 
     createParticles(
         localPlayer.x,
         localPlayer.y,
         "#ff6d7f",
-        12
+        10
     );
 
 
-    sendLocalState();
+    updateHud();
 
 
-    if (localPlayer.hp <= 0) {
+    if (
+        localPlayer.hp <= 0
+    ) {
 
-        finishLocalDeath();
+        localPlayer.hp = 0;
+
+        sendLocalState(true);
+
+        finishDeath();
 
     }
 
 }
 
 
-async function finishLocalDeath() {
+async function finishDeath() {
 
     if (gameOver) {
         return;
@@ -768,13 +878,16 @@ async function finishLocalDeath() {
     gameOver = true;
 
 
+    if (!isHost) {
+        return;
+    }
+
+
     const winner =
-        isHost
-            ? "player2"
-            : "player1";
+        "player1";
 
 
-    if (isHost) {
+    try {
 
         await update(
             ref(
@@ -783,16 +896,97 @@ async function finishLocalDeath() {
             ),
             {
 
+                status: "finished",
+
                 winner,
 
-                status: "finished",
+                time: 0,
 
                 finishedAt: Date.now()
 
             }
         );
 
+    } catch (error) {
+
+        console.error(
+            error
+        );
+
     }
+
+}
+
+
+function processRemoteShot(shot) {
+
+    if (
+        !localPlayer ||
+        gameOver
+    ) {
+        return;
+    }
+
+
+    const dx =
+        localPlayer.x -
+        shot.x;
+
+    const dy =
+        localPlayer.y -
+        shot.y;
+
+
+    const projection =
+        dx * shot.dx +
+        dy * shot.dy;
+
+
+    if (
+        projection < 0 ||
+        projection > 1000
+    ) {
+        return;
+    }
+
+
+    const closestX =
+        shot.x +
+        shot.dx *
+        projection;
+
+    const closestY =
+        shot.y +
+        shot.dy *
+        projection;
+
+
+    const distance =
+        Math.hypot(
+            localPlayer.x -
+            closestX,
+
+            localPlayer.y -
+            closestY
+        );
+
+
+    if (
+        distance <=
+        localPlayer.radius + 5
+    ) {
+
+        applyDamage(10);
+
+    }
+
+
+    createParticles(
+        closestX,
+        closestY,
+        "#ffffff",
+        3
+    );
 
 }
 
@@ -804,7 +998,11 @@ function createParticles(
     count
 ) {
 
-    for (let i = 0; i < count; i++) {
+    for (
+        let i = 0;
+        i < count;
+        i++
+    ) {
 
         const angle =
             Math.random() *
@@ -813,7 +1011,8 @@ function createParticles(
 
         const speed =
             30 +
-            Math.random() * 150;
+            Math.random() *
+            140;
 
 
         particles.push({
@@ -830,10 +1029,11 @@ function createParticles(
                 speed,
 
             life:
-                .25 +
-                Math.random() * .4,
+                .2 +
+                Math.random() *
+                .35,
 
-            maxLife: .65,
+            maxLife: .55,
 
             color
 
@@ -857,24 +1057,40 @@ function updateParticles(dt) {
 
 
         p.x +=
-            p.vx * dt;
+            p.vx *
+            dt;
 
         p.y +=
-            p.vy * dt;
+            p.vy *
+            dt;
 
 
         p.vx *=
-            Math.pow(.01, dt);
+            Math.pow(
+                .02,
+                dt
+            );
 
         p.vy *=
-            Math.pow(.01, dt);
+            Math.pow(
+                .02,
+                dt
+            );
 
 
-        p.life -= dt;
+        p.life -=
+            dt;
 
 
-        if (p.life <= 0) {
-            particles.splice(i, 1);
+        if (
+            p.life <= 0
+        ) {
+
+            particles.splice(
+                i,
+                1
+            );
+
         }
 
     }
@@ -882,22 +1098,65 @@ function updateParticles(dt) {
 }
 
 
-async function sendLocalState() {
+async function sendLocalState(
+    force = false
+) {
 
     if (
         !roomId ||
-        !playerId ||
-        !localPlayer ||
-        !db
+        !db ||
+        !localPlayer
     ) {
         return;
     }
 
 
-    const playerPath =
+    const dx =
+        localPlayer.x -
+        lastSentX;
+
+    const dy =
+        localPlayer.y -
+        lastSentY;
+
+    const da =
+        Math.abs(
+            localPlayer.angle -
+            lastSentAngle
+        );
+
+
+    const changed =
+        force ||
+        Math.abs(dx) > 2 ||
+        Math.abs(dy) > 2 ||
+        da > .025 ||
+        localPlayer.hp !==
+            lastSentHp;
+
+
+    if (!changed) {
+        return;
+    }
+
+
+    const path =
         isHost
             ? "player1"
             : "player2";
+
+
+    lastSentX =
+        localPlayer.x;
+
+    lastSentY =
+        localPlayer.y;
+
+    lastSentAngle =
+        localPlayer.angle;
+
+    lastSentHp =
+        localPlayer.hp;
 
 
     try {
@@ -905,23 +1164,30 @@ async function sendLocalState() {
         await update(
             ref(
                 db,
-                `rooms/${roomId}/players/${playerPath}`
+                `rooms/${roomId}/players/${path}`
             ),
             {
 
-                id: playerId,
+                x:
+                    Math.round(
+                        localPlayer.x *
+                        10
+                    ) / 10,
 
-                x: localPlayer.x,
+                y:
+                    Math.round(
+                        localPlayer.y *
+                        10
+                    ) / 10,
 
-                y: localPlayer.y,
+                angle:
+                    localPlayer.angle,
 
-                angle: localPlayer.angle,
+                hp:
+                    localPlayer.hp,
 
-                hp: localPlayer.hp,
-
-                connected: true,
-
-                timestamp: Date.now()
+                timestamp:
+                    Date.now()
 
             }
         );
@@ -929,7 +1195,7 @@ async function sendLocalState() {
     } catch (error) {
 
         console.error(
-            "State sync error:",
+            "Network:",
             error
         );
 
@@ -940,29 +1206,119 @@ async function sendLocalState() {
 
 function updateOpponent(data) {
 
-    if (!data || !opponent) {
+    if (
+        !data ||
+        !opponent
+    ) {
         return;
     }
 
 
-    opponent.x =
-        data.x ?? opponent.x;
+    opponentTarget.x =
+        Number(data.x) ||
+        opponentTarget.x;
 
-    opponent.y =
-        data.y ?? opponent.y;
+    opponentTarget.y =
+        Number(data.y) ||
+        opponentTarget.y;
 
-    opponent.angle =
-        data.angle ?? opponent.angle;
+    opponentTarget.angle =
+        Number(data.angle) ||
+        opponentTarget.angle;
 
-    opponent.hp =
-        data.hp ?? opponent.hp;
+    opponentTarget.hp =
+        typeof data.hp === "number"
+            ? data.hp
+            : opponentTarget.hp;
+
+
+    if (
+        Math.abs(
+            opponentTarget.x -
+            opponent.x
+        ) > 180 ||
+        Math.abs(
+            opponentTarget.y -
+            opponent.y
+        ) > 180
+    ) {
+
+        opponent.x =
+            opponentTarget.x;
+
+        opponent.y =
+            opponentTarget.y;
+
+    }
+
+
+    lastRemoteX =
+        opponentTarget.x;
+
+    lastRemoteY =
+        opponentTarget.y;
+
+    lastRemoteAngle =
+        opponentTarget.angle;
 
 }
 
 
-function setupFirebaseListeners() {
+function interpolateOpponent(dt) {
 
-    if (!roomId || !db) {
+    if (!opponent) {
+        return;
+    }
+
+
+    const smooth =
+        1 -
+        Math.pow(
+            .0001,
+            dt
+        );
+
+
+    opponent.x =
+        lerp(
+            opponent.x,
+            opponentTarget.x,
+            smooth
+        );
+
+    opponent.y =
+        lerp(
+            opponent.y,
+            opponentTarget.y,
+            smooth
+        );
+
+    opponent.angle =
+        angleLerp(
+            opponent.angle,
+            opponentTarget.angle,
+            smooth
+        );
+
+    opponent.hp =
+        lerp(
+            opponent.hp,
+            opponentTarget.hp,
+            Math.min(
+                1,
+                dt * 12
+            )
+        );
+
+}
+
+
+function setupFirebase() {
+
+    if (
+        !roomId ||
+        !db
+    ) {
         return;
     }
 
@@ -973,272 +1329,177 @@ function setupFirebaseListeners() {
             : "player1";
 
 
-    const localPath =
-        isHost
-            ? "player1"
-            : "player2";
-
-
-    opponentUnsubscribe = onValue(
-        ref(
-            db,
-            `rooms/${roomId}/players/${opponentPath}`
-        ),
-        snapshot => {
-
-            if (snapshot.exists()) {
-
-                updateOpponent(
-                    snapshot.val()
-                );
-
-            }
-
-        }
-    );
-
-
-    playerUnsubscribe = onValue(
-        ref(
-            db,
-            `rooms/${roomId}/players/${localPath}`
-        ),
-        snapshot => {
-
-            if (!snapshot.exists()) {
-                return;
-            }
-
-            const data =
-                snapshot.val();
-
-
-            if (
-                typeof data.hp === "number" &&
-                localPlayer
-            ) {
+    opponentUnsubscribe =
+        onValue(
+            ref(
+                db,
+                `rooms/${roomId}/players/${opponentPath}`
+            ),
+            snapshot => {
 
                 if (
-                    data.hp <
-                    localPlayer.hp
+                    snapshot.exists()
                 ) {
 
-                    localPlayer.hp =
-                        data.hp;
+                    updateOpponent(
+                        snapshot.val()
+                    );
 
                 }
 
             }
-
-        }
-    );
+        );
 
 
-    roomUnsubscribe = onValue(
-        ref(
-            db,
-            `rooms/${roomId}`
-        ),
-        snapshot => {
+    roomUnsubscribe =
+        onValue(
+            ref(
+                db,
+                `rooms/${roomId}`
+            ),
+            snapshot => {
 
-            if (!snapshot.exists()) {
+                if (
+                    !snapshot.exists()
+                ) {
 
-                showGameResult(
-                    "SERVER CLOSED",
-                    "The server no longer exists."
+                    showGameResult(
+                        "SERVER CLOSED",
+                        "The server was closed."
+                    );
+
+                    return;
+
+                }
+
+
+                const room =
+                    snapshot.val();
+
+
+                if (
+                    room.status ===
+                    "playing"
+                ) {
+
+                    if (
+                        room.startedAt &&
+                        !remoteGameStartTime
+                    ) {
+
+                        remoteGameStartTime =
+                            room.startedAt;
+
+                        if (!gameStartTime) {
+                            gameStartTime =
+                                room.startedAt;
+                        }
+
+                    }
+
+                    statusEl.textContent =
+                        "FIGHT";
+
+                }
+
+
+                const game =
+                    room.game;
+
+
+                if (
+                    game &&
+                    game.status ===
+                    "finished"
+                ) {
+
+                    finishFromFirebase(
+                        game.winner
+                    );
+
+                }
+
+            }
+        );
+
+
+    shotUnsubscribe =
+        onChildAdded(
+            ref(
+                db,
+                `rooms/${roomId}/shots`
+            ),
+            snapshot => {
+
+                const shot =
+                    snapshot.val();
+
+
+                if (
+                    !shot ||
+                    shot.owner ===
+                    playerId
+                ) {
+                    return;
+                }
+
+
+                processRemoteShot(
+                    shot
                 );
 
-                return;
-
             }
+        );
+
+}
 
 
-            const room =
-                snapshot.val();
+function getTimeLeft() {
+
+    if (!gameStartTime) {
+        return ROUND_TIME;
+    }
 
 
-            const game =
-                room.game || {};
-
-
-            if (
-                game.status === "finished"
-            ) {
-
-                finishFromFirebase(
-                    game.winner
-                );
-
-                return;
-
-            }
-
-
-            if (
-                room.status === "playing"
-            ) {
-
-                statusEl.textContent =
-                    "FIGHT";
-
-            }
-
-        }
-    );
-
-
-    shotUnsubscribe = onChildAdded(
-        ref(
-            db,
-            `rooms/${roomId}/shots`
-        ),
-        snapshot => {
-
-            const shot =
-                snapshot.val();
-
-
-            if (!shot) {
-                return;
-            }
-
-
-            if (
-                shot.owner === playerId
-            ) {
-                return;
-            }
-
-
-            processRemoteShot(
-                shot
-            );
-
-        }
+    return clamp(
+        ROUND_TIME -
+        (
+            Date.now() -
+            gameStartTime
+        ) / 1000,
+        0,
+        ROUND_TIME
     );
 
 }
 
 
-function processRemoteShot(shot) {
-
-    if (!localPlayer || gameOver) {
-        return;
-    }
+let hostFinishSent = false;
 
 
-    const dx =
-        localPlayer.x - shot.x;
-
-    const dy =
-        localPlayer.y - shot.y;
-
-
-    const projection =
-        dx * shot.dx +
-        dy * shot.dy;
-
+async function hostTick() {
 
     if (
-        projection < 0 ||
-        projection > 900
+        !isHost ||
+        !started ||
+        gameOver ||
+        !db
     ) {
         return;
     }
 
 
-    const closestX =
-        shot.x +
-        shot.dx *
-        projection;
-
-    const closestY =
-        shot.y +
-        shot.dy *
-        projection;
-
-
-    const d =
-        Math.hypot(
-            localPlayer.x - closestX,
-            localPlayer.y - closestY
-        );
+    const timeLeft =
+        getTimeLeft();
 
 
     if (
-        d <=
-        localPlayer.radius + 5
+        timeLeft <= 0 &&
+        !hostFinishSent
     ) {
 
-        takeDamage(10);
-
-    }
-
-
-    createParticles(
-        closestX,
-        closestY,
-        "#ffffff",
-        4
-    );
-
-}
-
-
-async function hostGameLoop(dt) {
-
-    if (!isHost || !roomId || !db) {
-        return;
-    }
-
-
-    if (gameOver) {
-        return;
-    }
-
-
-    const now =
-        Date.now();
-
-
-    if (!hostLastTime) {
-        hostLastTime = now;
-    }
-
-
-    const elapsed =
-        (now - hostLastTime) / 1000;
-
-
-    hostLastTime = now;
-
-
-    const gameRef =
-        ref(
-            db,
-            `rooms/${roomId}/game`
-        );
-
-
-    const currentTime =
-        Math.max(
-            0,
-            (30 - (
-                (now -
-                (
-                    window.duelGameStartTime ||
-                    now
-                )) / 1000
-            ))
-        );
-
-
-    if (
-        currentTime <= 0 &&
-        !hostEndProcessed
-    ) {
-
-        hostEndProcessed = true;
+        hostFinishSent =
+            true;
 
 
         let winner = null;
@@ -1246,206 +1507,159 @@ async function hostGameLoop(dt) {
 
         if (
             localPlayer.hp >
-            opponent.hp
+            opponentTarget.hp
         ) {
 
-            winner = "player1";
+            winner =
+                "player1";
 
         } else if (
-            opponent.hp >
+            opponentTarget.hp >
             localPlayer.hp
         ) {
 
-            winner = "player2";
+            winner =
+                "player2";
 
         }
 
 
-        await update(
-            gameRef,
-            {
+        try {
 
-                time: 0,
+            await update(
+                ref(
+                    db,
+                    `rooms/${roomId}/game`
+                ),
+                {
 
-                status: "finished",
+                    status:
+                        "finished",
 
-                winner,
+                    winner,
 
-                finishedAt: Date.now()
+                    time: 0,
 
-            }
-        );
+                    finishedAt:
+                        Date.now()
 
+                }
+            );
 
-        return;
+        } catch (error) {
+
+            console.error(
+                error
+            );
+
+        }
 
     }
+
+}
+
+
+let timeNetworkTimer = 0;
+
+
+function updateNetwork(dt) {
+
+    networkTimer += dt;
 
 
     if (
-        now - lastNetworkUpdate >
-        80
+        networkTimer >=
+        NETWORK_RATE
     ) {
 
-        lastNetworkUpdate =
-            now;
+        networkTimer = 0;
 
-
-        await update(
-            gameRef,
-            {
-
-                time:
-                    Math.max(
-                        0,
-                        currentTime
-                    )
-
-            }
-        );
-
-    }
-
-}
-
-
-function finishFromFirebase(
-    winner
-) {
-
-    if (gameOver) {
-        return;
-    }
-
-
-    gameOver = true;
-
-
-    let title;
-    let text;
-
-
-    if (!winner) {
-
-        title = "DRAW";
-
-        text =
-            "Time is over.";
-
-    } else {
-
-        const iWon =
-            (
-                winner === "player1" &&
-                isHost
-            ) ||
-            (
-                winner === "player2" &&
-                !isHost
-            );
-
-
-        if (iWon) {
-
-            title = "VICTORY";
-
-            text =
-                "You won the round.";
-
-        } else {
-
-            title = "DEFEAT";
-
-            text =
-                "Your opponent won.";
-
-        }
+        sendLocalState();
 
     }
 
 
-    showGameResult(
-        title,
-        text
-    );
-
-}
+    timeNetworkTimer += dt;
 
 
-function showGameResult(
-    title,
-    text
-) {
+    if (
+        isHost &&
+        timeNetworkTimer >= .25
+    ) {
 
-    resultTitle.textContent =
-        title;
+        timeNetworkTimer = 0;
 
-    resultText.textContent =
-        text;
+        hostTick();
 
-    overlay.classList.add(
-        "show"
-    );
+    }
 
 }
 
 
 function updateTimer() {
 
-    if (!roomId || !db) {
-        return;
-    }
-
-
-    const startTime =
-        window.duelGameStartTime;
-
-
-    if (!startTime) {
-        return;
-    }
-
-
-    const remaining =
-        Math.max(
-            0,
-            30 -
-            (
-                Date.now() -
-                startTime
-            ) / 1000
-        );
+    const time =
+        getTimeLeft();
 
 
     timeEl.textContent =
-        remaining.toFixed(1);
+        time.toFixed(1);
+
+
+    if (
+        time <= 5
+    ) {
+
+        timeEl.style.color =
+            "#ff6d7f";
+
+    } else {
+
+        timeEl.style.color =
+            "";
+
+    }
 
 }
 
 
 function updateHud() {
 
-    if (!localPlayer || !opponent) {
+    if (
+        !localPlayer ||
+        !opponent
+    ) {
         return;
     }
 
 
-    p1HpText.textContent =
-        Math.ceil(
-            localPlayer.hp
+    const localHp =
+        clamp(
+            localPlayer.hp,
+            0,
+            100
         );
 
-    p2HpText.textContent =
-        Math.ceil(
-            opponent.hp
+    const enemyHp =
+        clamp(
+            opponent.hp,
+            0,
+            100
         );
+
+
+    p1HpText.textContent =
+        Math.ceil(localHp);
+
+    p2HpText.textContent =
+        Math.ceil(enemyHp);
 
 
     p1Health.style.width =
-        `${clamp(localPlayer.hp,0,100)}%`;
+        `${localHp}%`;
 
     p2Health.style.width =
-        `${clamp(opponent.hp,0,100)}%`;
+        `${enemyHp}%`;
 
 }
 
@@ -1469,19 +1683,26 @@ function drawGrid() {
     ctx.lineWidth = 1;
 
 
-    const size = 40;
+    const gridSize = 40;
 
 
     for (
         let x = 0;
         x <= W;
-        x += size
+        x += gridSize
     ) {
 
         ctx.beginPath();
 
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H);
+        ctx.moveTo(
+            x,
+            0
+        );
+
+        ctx.lineTo(
+            x,
+            H
+        );
 
         ctx.stroke();
 
@@ -1491,13 +1712,20 @@ function drawGrid() {
     for (
         let y = 0;
         y <= H;
-        y += size
+        y += gridSize
     ) {
 
         ctx.beginPath();
 
-        ctx.moveTo(0, y);
-        ctx.lineTo(W, y);
+        ctx.moveTo(
+            0,
+            y
+        );
+
+        ctx.lineTo(
+            W,
+            y
+        );
 
         ctx.stroke();
 
@@ -1522,7 +1750,7 @@ function drawGrid() {
 function drawPlayer(
     player,
     color,
-    isLocal
+    local
 ) {
 
     if (!player) {
@@ -1531,6 +1759,7 @@ function drawPlayer(
 
 
     ctx.save();
+
 
     ctx.translate(
         player.x,
@@ -1547,7 +1776,6 @@ function drawPlayer(
 
     ctx.shadowColor =
         color;
-
 
     ctx.fillStyle =
         color;
@@ -1571,6 +1799,7 @@ function drawPlayer(
 
     ctx.fillStyle =
         "#ffffff";
+
 
     ctx.beginPath();
 
@@ -1597,12 +1826,13 @@ function drawPlayer(
     ctx.restore();
 
 
-    if (isLocal) {
+    if (local) {
 
         ctx.strokeStyle =
-            "rgba(255,255,255,.25)";
+            "rgba(255,255,255,.2)";
 
         ctx.lineWidth = 1;
+
 
         ctx.beginPath();
 
@@ -1623,17 +1853,17 @@ function drawPlayer(
 
 function drawBullets() {
 
-    for (const bullet of bullets) {
-
-        ctx.save();
+    for (
+        const bullet of bullets
+    ) {
 
         ctx.fillStyle =
-            bullet.color;
+            "#ffffff";
 
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 10;
 
         ctx.shadowColor =
-            bullet.color;
+            "#ffffff";
 
 
         ctx.beginPath();
@@ -1648,21 +1878,52 @@ function drawBullets() {
 
         ctx.fill();
 
+    }
 
-        ctx.restore();
+
+    for (
+        const bullet of remoteBullets
+    ) {
+
+        ctx.fillStyle =
+            "#ff6d7f";
+
+        ctx.shadowBlur = 10;
+
+        ctx.shadowColor =
+            "#ff6d7f";
+
+
+        ctx.beginPath();
+
+        ctx.arc(
+            bullet.x,
+            bullet.y,
+            4,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fill();
 
     }
+
+
+    ctx.shadowBlur = 0;
 
 }
 
 
 function drawParticles() {
 
-    for (const p of particles) {
+    for (
+        const p of particles
+    ) {
 
         const alpha =
             clamp(
-                p.life / p.maxLife,
+                p.life /
+                p.maxLife,
                 0,
                 1
             );
@@ -1709,7 +1970,7 @@ function drawHook() {
 
 
     ctx.strokeStyle =
-        "rgba(103,167,255,.8)";
+        "rgba(103,167,255,.85)";
 
     ctx.lineWidth = 2;
 
@@ -1740,7 +2001,7 @@ function drawHook() {
     ctx.fillStyle =
         "#67a7ff";
 
-    ctx.shadowBlur = 16;
+    ctx.shadowBlur = 15;
 
     ctx.shadowColor =
         "#67a7ff";
@@ -1766,10 +2027,8 @@ function drawHook() {
 
 function drawCrosshair() {
 
-    ctx.save();
-
     ctx.strokeStyle =
-        "rgba(255,255,255,.8)";
+        "rgba(255,255,255,.75)";
 
     ctx.lineWidth = 1;
 
@@ -1802,6 +2061,7 @@ function drawCrosshair() {
     ctx.fillStyle =
         "#ffffff";
 
+
     ctx.beginPath();
 
     ctx.arc(
@@ -1813,9 +2073,6 @@ function drawCrosshair() {
     );
 
     ctx.fill();
-
-
-    ctx.restore();
 
 }
 
@@ -1847,32 +2104,88 @@ function render() {
 }
 
 
-function networkTick() {
+function showGameResult(
+    title,
+    text
+) {
 
-    if (
-        !started ||
-        !localPlayer ||
-        !roomId
-    ) {
+    if (gameOver) {
         return;
     }
 
 
-    const now =
-        performance.now();
+    gameOver = true;
 
 
-    if (
-        now - lastNetworkUpdate >
-        80
-    ) {
+    resultTitle.textContent =
+        title;
 
-        lastNetworkUpdate =
-            now;
+    resultText.textContent =
+        text;
 
-        sendLocalState();
+    overlay.classList.add(
+        "show"
+    );
+
+}
+
+
+function finishFromFirebase(
+    winner
+) {
+
+    if (gameOver) {
+        return;
+    }
+
+
+    let title;
+    let text;
+
+
+    if (!winner) {
+
+        title = "DRAW";
+
+        text =
+            "Time is over.";
+
+    } else {
+
+        const won =
+            (
+                winner === "player1" &&
+                isHost
+            ) ||
+            (
+                winner === "player2" &&
+                !isHost
+            );
+
+
+        if (won) {
+
+            title = "VICTORY";
+
+            text =
+                "You won the duel.";
+
+        } else {
+
+            title = "DEFEAT";
+
+            text =
+                "Your opponent won.";
+
+        }
 
     }
+
+
+    showGameResult(
+        title,
+        text
+    );
 
 }
 
@@ -1882,11 +2195,12 @@ function frame(now) {
     const dt =
         Math.min(
             .033,
-            (now - last) / 1000
+            (now - lastFrame) /
+            1000
         );
 
 
-    last = now;
+    lastFrame = now;
 
 
     if (
@@ -1896,31 +2210,23 @@ function frame(now) {
 
         updateAim();
 
-        movePlayer(dt);
+        updateMovement(dt);
 
         updateHook(dt);
 
         updateBullets(dt);
 
+        interpolateOpponent(dt);
+
         updateParticles(dt);
 
-        networkTick();
+        updateNetwork(dt);
 
         updateTimer();
 
         updateHud();
 
-        if (isHost) {
-            hostGameLoop(dt);
-        }
-
-    }
-
-
-    if (
-        !started ||
-        gameOver
-    ) {
+    } else {
 
         updateParticles(dt);
 
@@ -1937,47 +2243,47 @@ function frame(now) {
 }
 
 
-function initializeGame(
-    detail
-) {
-
-    roomId =
-        detail.roomId;
-
-    playerId =
-        detail.playerId;
-
-    isHost =
-        detail.isHost;
-
-    db =
-        window.duelRoom.getDatabase();
-
-
-    resetGameState();
-
-
-    window.duelGameStartTime =
-        Date.now();
-
-
-    setupFirebaseListeners();
-
-
-    sendLocalState();
-
-
-    started = true;
-
-}
-
-
 window.addEventListener(
     "duel-game-start",
     event => {
 
-        initializeGame(
-            event.detail
+        const data =
+            event.detail;
+
+
+        roomId =
+            data.roomId;
+
+        playerId =
+            data.playerId;
+
+        isHost =
+            data.isHost;
+
+        db =
+            window.duelRoom
+                .getDatabase();
+
+
+        resetGame();
+
+
+        gameStartTime =
+            Date.now();
+
+
+        remoteGameStartTime =
+            gameStartTime;
+
+
+        started = true;
+
+
+        setupFirebase();
+
+
+        sendLocalState(
+            true
         );
 
     }
@@ -1986,7 +2292,26 @@ window.addEventListener(
 
 backToMenu.addEventListener(
     "click",
-    () => {
+    async () => {
+
+        if (
+            roomId &&
+            db
+        ) {
+
+            try {
+
+                await remove(
+                    ref(
+                        db,
+                        `rooms/${roomId}/shots`
+                    )
+                );
+
+            } catch {}
+
+        }
+
 
         window.dispatchEvent(
             new Event(
@@ -2004,6 +2329,7 @@ window.addEventListener(
 
         const key =
             event.key.toLowerCase();
+
 
         keys.add(key);
 
@@ -2036,12 +2362,27 @@ window.addEventListener(
 );
 
 
+window.addEventListener(
+    "blur",
+    () => {
+
+        keys.clear();
+
+        mouse.down = false;
+
+        mouse.rightDown = false;
+
+    }
+);
+
+
 canvas.addEventListener(
     "mousemove",
     event => {
 
         const point =
             canvasPoint(event);
+
 
         mouse.x =
             point.x;
@@ -2094,13 +2435,18 @@ window.addEventListener(
         if (
             event.button === 0
         ) {
+
             mouse.down = false;
+
         }
+
 
         if (
             event.button === 2
         ) {
+
             mouse.rightDown = false;
+
         }
 
     }
@@ -2110,7 +2456,9 @@ window.addEventListener(
 canvas.addEventListener(
     "contextmenu",
     event => {
+
         event.preventDefault();
+
     }
 );
 
@@ -2129,7 +2477,7 @@ setInterval(
         }
 
     },
-    40
+    30
 );
 
 
