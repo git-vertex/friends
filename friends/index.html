@@ -1,68 +1,146 @@
 <!doctype html>
 <html lang="ru">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Duel Arena</title>
-<link rel="stylesheet" href="./style.css">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Duel Arena</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div id="app">
-  <main class="shell">
-    <section class="topbar">
-      <div class="player-card">
-        <span class="dot blue"></span>
-        <div>
-          <div class="name">YOU</div>
-          <div class="label">HP <span id="p1HpText">100</span></div>
-          <div class="health"><div id="p1Health"></div></div>
+<div id="lobby">
+    <div class="lobby-panel">
+        <h1>DUEL ARENA</h1>
+        <p>Онлайн 1v1 через Firebase</p>
+
+        <button id="createRoom">Создать комнату</button>
+
+        <div id="createdRoom" class="created-room hidden">
+            <span>Код комнаты</span>
+            <strong id="roomCode">------</strong>
+            <button id="copyCode">Копировать код</button>
+            <small id="waitingText">Ждём второго игрока...</small>
         </div>
-      </div>
 
-      <div class="timer">
-        <div id="time">30.0</div>
-        <div id="status">ROUND 1</div>
-      </div>
+        <div class="separator">ИЛИ</div>
 
-      <div class="player-card right">
-        <div>
-          <div class="name">BOT</div>
-          <div class="label">HP <span id="p2HpText">100</span></div>
-          <div class="health"><div id="p2Health"></div></div>
-        </div>
-        <span class="dot red"></span>
-      </div>
-    </section>
+        <input
+            id="joinCode"
+            maxlength="6"
+            placeholder="КОД КОМНАТЫ"
+            autocomplete="off"
+        >
 
-    <section class="arena-wrap">
-      <canvas id="game" width="960" height="540"></canvas>
+        <button id="joinRoom">Войти в комнату</button>
 
-      <div class="overlay" id="overlay">
-        <div class="result">
-          <h1 id="resultTitle">TIME</h1>
-          <p id="resultText">Раунд завершён</p>
-          <button id="restart">Новый раунд</button>
-        </div>
-      </div>
-    </section>
+        <div class="separator">ИЛИ</div>
 
-    <div class="hint">
-      <div>
-        <span class="kbd">WASD</span>
-        движение · мышь — прицел ·
-        <span class="kbd">ЛКМ</span>
-        стрелять
-      </div>
+        <button id="playBot" class="secondary">
+            Играть с BOT
+        </button>
 
-      <div>
-        Выстрел: 1с · Хук: 2с · Раунд: 30с
-      </div>
+        <div id="lobbyStatus"></div>
     </div>
-  </main>
 </div>
 
-<script src="./game.js"></script>
+<div id="app">
+
+    <main class="shell">
+
+        <section class="topbar">
+
+            <div class="player-card">
+                <span class="dot blue"></span>
+
+                <div>
+                    <div class="name">YOU</div>
+                    <div class="label">
+                        HP <span id="p1HpText">100</span>
+                    </div>
+
+                    <div class="health">
+                        <div id="p1Health"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="timer">
+                <div id="time">30.0</div>
+                <div id="status">WAITING</div>
+            </div>
+
+            <div class="player-card right">
+
+                <div>
+                    <div class="name" id="enemyName">OPPONENT</div>
+
+                    <div class="label">
+                        HP <span id="p2HpText">100</span>
+                    </div>
+
+                    <div class="health">
+                        <div id="p2Health"></div>
+                    </div>
+                </div>
+
+                <span class="dot red"></span>
+
+            </div>
+
+        </section>
+
+        <section class="arena-wrap">
+
+            <canvas
+                id="game"
+                width="960"
+                height="540"
+            ></canvas>
+
+            <div class="overlay" id="overlay">
+
+                <div class="result">
+
+                    <h1 id="resultTitle">TIME</h1>
+
+                    <p id="resultText">
+                        Раунд завершён
+                    </p>
+
+                    <button id="restart">
+                        Новый раунд
+                    </button>
+
+                    <button id="backToLobby">
+                        Выйти в меню
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+        <div class="hint">
+            <div>
+                <span class="kbd">WASD</span>
+                движение · мышь — прицел ·
+                <span class="kbd">ЛКМ</span>
+                стрелять ·
+                <span class="kbd">ПКМ</span>
+                хук
+            </div>
+
+            <div>
+                Выстрел: 1с · Хук: 2с · Раунд: 30с
+            </div>
+        </div>
+
+    </main>
+
+</div>
+
+<script type="module" src="game.js"></script>
 
 </body>
 </html>
