@@ -1,114 +1,1289 @@
-(() => {
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  const timeEl = document.getElementById('time');
-  const statusEl = document.getElementById('status');
-  const overlay = document.getElementById('overlay');
-  const resultTitle = document.getElementById('resultTitle');
-  const resultText = document.getElementById('resultText');
-  const restartBtn = document.getElementById('restart');
-  const p1HpText = document.getElementById('p1HpText');
-  const p2HpText = document.getElementById('p2HpText');
-  const p1Health = document.getElementById('p1Health');
-  const p2Health = document.getElementById('p2Health');
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+import {
+    getDatabase,
+    ref,
+    set,
+    update,
+    get,
+    onValue,
+    onDisconnect,
+    remove
+} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
 
-  const W = canvas.width;
-  const H = canvas.height;
-  const keys = new Set();
-  const mouse = { x: W * .5, y: H * .5, down: false };
-  let state;
-  let last = performance.now();
-  let round = 1;
+const firebaseConfig = {
+    apiKey: "AIzaSyA2wzPsy6M1XBfbOxUP7JdCrWDyDmB8os",
+    authDomain: "friends-66f85.firebaseapp.com",
+    databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
+    projectId: "friends-66f85",
+    storageBucket: "friends-66f85.firebasestorage.app",
+    messagingSenderId: "841738224372",
+    appId: "1:841738224372:web:92954bc9f16d69b176d4a1"
+};
 
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const len = (x, y) => Math.hypot(x, y);
-  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
 
-  function makePlayer(x, y, color, dir) {
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const timeEl = document.getElementById("time");
+const statusEl = document.getElementById("status");
+const overlay = document.getElementById("overlay");
+const resultTitle = document.getElementById("resultTitle");
+const resultText = document.getElementById("resultText");
+const restartBtn = document.getElementById("restart");
+
+const p1HpText = document.getElementById("p1HpText");
+const p2HpText = document.getElementById("p2HpText");
+const p1Health = document.getElementById("p1Health");
+const p2Health = document.getElementById("p2Health");
+
+const W = canvas.width;
+const H = canvas.height;
+
+const keys = new Set();
+
+const mouse = {
+    x: W / 2,
+    y: H / 2,
+    down: false
+};
+
+const clientId =
+    localStorage.getItem("duel_client_id") ||
+    crypto.randomUUID();
+
+localStorage.setItem(
+    "duel_client_id",
+    clientId
+);
+
+let roomCode = null;
+let isHost = false;
+let opponentId = null;
+let unsubscribeRoom = null;
+
+let last = performance.now();
+let lastNetworkSend = 0;
+let networkShotId = 0;
+
+let round = 1;
+
+let state = null;
+
+const remote = {
+    x: 0,
+    y: 0,
+    hp: 100,
+    r: 17,
+    color: "#ff6d7f",
+    dir: -1,
+    recoil: 0,
+    hurt: 0,
+    targetX: 0,
+    targetY: 0,
+    bullets: []
+};
+
+const clamp = (v, a, b) =>
+    Math.max(a, Math.min(b, v));
+
+const len = (x, y) =>
+    Math.hypot(x, y);
+
+const dist = (a, b) =>
+    Math.hypot(
+        a.x - b.x,
+        a.y - b.y
+    );
+
+function makePlayer(x, y, color, dir) {
     return {
-      x,
-      y,
-      r: 17,
-      hp: 100,
-      color,
-      dir,
-      speed: 215,
-      cooldown: 0,
-      hurt: 0,
-      recoil: 0,
-      hookVx: 0,
-      hookVy: 0
+        x,
+        y,
+        r: 17,
+        hp: 100,
+        color,
+        dir,
+        speed: 215,
+        cooldown: 0,
+        hurt: 0,
+        recoil: 0,
+        hookVx: 0,
+        hookVy: 0
     };
-  }
+}
 
-  function reset() {
+function randomRoomCode() {
+    const chars =
+        "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    let code = "";
+
+    for (let i = 0; i < 6; i++) {
+        code +=
+            chars[
+                Math.floor(
+                    Math.random() *
+                    chars.length
+                )
+            ];
+    }
+
+    return code;
+}
+
+function normalizeRoomCode(value) {
+    return String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+        .slice(0, 6);
+}
+
+function createLobby() {
+    if (document.getElementById("multiplayerLobby"))
+        return;
+
+    const style = document.createElement("style");
+
+    style.textContent = `
+        #multiplayerLobby {
+            position:fixed;
+            inset:0;
+            z-index:10000;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:rgba(5,7,11,.88);
+            backdrop-filter:blur(9px);
+            padding:18px;
+        }
+
+        #multiplayerPanel {
+            width:min(460px, calc(100vw - 28px));
+            padding:28px;
+            border:1px solid #303a4a;
+            border-radius:18px;
+            background:#11161f;
+            box-shadow:0 25px 80px rgba(0,0,0,.55);
+        }
+
+        #multiplayerPanel h1 {
+            margin:0;
+            text-align:center;
+            font-size:30px;
+        }
+
+        #multiplayerPanel p {
+            margin:8px 0 24px;
+            text-align:center;
+            color:#97a2b1;
+            font-size:13px;
+        }
+
+        .roomActions {
+            display:grid;
+            gap:10px;
+        }
+
+        .roomButton {
+            width:100%;
+            padding:13px 16px;
+            border:1px solid #374457;
+            border-radius:10px;
+            background:#1a2230;
+            color:#eef2f7;
+            font:inherit;
+            font-weight:800;
+            cursor:pointer;
+        }
+
+        .roomButton:hover {
+            background:#222d3d;
+        }
+
+        #roomCodeInput {
+            width:100%;
+            padding:13px 14px;
+            border:1px solid #374457;
+            border-radius:10px;
+            outline:none;
+            background:#0d121a;
+            color:#eef2f7;
+            font:inherit;
+            font-weight:800;
+            text-align:center;
+            letter-spacing:.16em;
+            text-transform:uppercase;
+        }
+
+        #roomCodeInput:focus {
+            border-color:#67a7ff;
+        }
+
+        #roomStatus {
+            min-height:20px;
+            margin-top:15px;
+            text-align:center;
+            color:#97a2b1;
+            font-size:12px;
+        }
+
+        #roomCreated {
+            display:none;
+            margin-top:18px;
+            padding:15px;
+            border:1px solid #303a4a;
+            border-radius:12px;
+            background:#171d27;
+            text-align:center;
+        }
+
+        #roomCreatedLabel {
+            color:#97a2b1;
+            font-size:11px;
+            margin-bottom:6px;
+        }
+
+        #roomCreatedCode {
+            font-size:30px;
+            font-weight:900;
+            letter-spacing:.18em;
+        }
+
+        #copyRoomCode {
+            margin-top:10px;
+            width:100%;
+        }
+
+        #botButton {
+            background:#171d27;
+            color:#97a2b1;
+        }
+    `;
+
+    document.head.appendChild(style);
+
+    const lobby = document.createElement("div");
+
+    lobby.id = "multiplayerLobby";
+
+    lobby.innerHTML = `
+        <div id="multiplayerPanel">
+
+            <h1>DUEL ARENA</h1>
+
+            <p>
+                Создай комнату или войди по коду
+            </p>
+
+            <div class="roomActions">
+
+                <button
+                    class="roomButton"
+                    id="createRoomButton"
+                >
+                    СОЗДАТЬ КОМНАТУ
+                </button>
+
+                <input
+                    id="roomCodeInput"
+                    maxlength="6"
+                    placeholder="КОД КОМНАТЫ"
+                    autocomplete="off"
+                >
+
+                <button
+                    class="roomButton"
+                    id="joinRoomButton"
+                >
+                    ВОЙТИ В КОМНАТУ
+                </button>
+
+                <button
+                    class="roomButton"
+                    id="botButton"
+                >
+                    ИГРАТЬ С BOT
+                </button>
+
+            </div>
+
+            <div id="roomCreated">
+                <div id="roomCreatedLabel">
+                    КОД КОМНАТЫ
+                </div>
+
+                <div id="roomCreatedCode"></div>
+
+                <button
+                    class="roomButton"
+                    id="copyRoomCode"
+                >
+                    КОПИРОВАТЬ
+                </button>
+            </div>
+
+            <div id="roomStatus"></div>
+
+        </div>
+    `;
+
+    document.body.appendChild(lobby);
+
+    document
+        .getElementById("createRoomButton")
+        .addEventListener(
+            "click",
+            createRoom
+        );
+
+    document
+        .getElementById("joinRoomButton")
+        .addEventListener(
+            "click",
+            joinRoom
+        );
+
+    document
+        .getElementById("botButton")
+        .addEventListener(
+            "click",
+            startBotGame
+        );
+
+    document
+        .getElementById("roomCodeInput")
+        .addEventListener(
+            "input",
+            e => {
+                e.target.value =
+                    normalizeRoomCode(
+                        e.target.value
+                    );
+            }
+        );
+
+    document
+        .getElementById("copyRoomCode")
+        .addEventListener(
+            "click",
+            async () => {
+
+                if (!roomCode)
+                    return;
+
+                try {
+                    await navigator.clipboard.writeText(
+                        roomCode
+                    );
+
+                    setRoomStatus(
+                        "Код скопирован."
+                    );
+                } catch {
+                    setRoomStatus(
+                        "Код: " + roomCode
+                    );
+                }
+            }
+        );
+}
+
+function setRoomStatus(text) {
+    const el =
+        document.getElementById(
+            "roomStatus"
+        );
+
+    if (el)
+        el.textContent = text;
+}
+
+function showLobby() {
+    const lobby =
+        document.getElementById(
+            "multiplayerLobby"
+        );
+
+    if (lobby)
+        lobby.style.display = "flex";
+}
+
+function hideLobby() {
+    const lobby =
+        document.getElementById(
+            "multiplayerLobby"
+        );
+
+    if (lobby)
+        lobby.style.display = "none";
+}
+
+function showCreatedRoom(code) {
+    const box =
+        document.getElementById(
+            "roomCreated"
+        );
+
+    const codeEl =
+        document.getElementById(
+            "roomCreatedCode"
+        );
+
+    if (box)
+        box.style.display = "block";
+
+    if (codeEl)
+        codeEl.textContent = code;
+}
+
+async function createRoom() {
+    setRoomStatus(
+        "Создание комнаты..."
+    );
+
+    let code = randomRoomCode();
+    let roomRef = ref(
+        db,
+        "rooms/" + code
+    );
+
+    let snapshot =
+        await get(roomRef);
+
+    while (snapshot.exists()) {
+        code = randomRoomCode();
+
+        roomRef = ref(
+            db,
+            "rooms/" + code
+        );
+
+        snapshot =
+            await get(roomRef);
+    }
+
+    roomCode = code;
+    isHost = true;
+    opponentId = null;
+
+    const room = {
+        host: clientId,
+        guest: null,
+        status: "waiting",
+        round: 1,
+        time: 30,
+        createdAt: Date.now(),
+        players: {
+            [clientId]: {
+                x: 130,
+                y: H / 2,
+                hp: 100,
+                r: 17,
+                ready: true,
+                lastUpdate: Date.now()
+            }
+        }
+    };
+
+    await set(
+        roomRef,
+        room
+    );
+
+    await onDisconnect(roomRef)
+        .cancel();
+
+    await onDisconnect(
+        ref(
+            db,
+            "rooms/" +
+            code +
+            "/players/" +
+            clientId
+        )
+    ).remove();
+
+    showCreatedRoom(code);
+
+    setRoomStatus(
+        "Ждём второго игрока..."
+    );
+
+    listenRoom();
+}
+
+async function joinRoom() {
+    const input =
+        document.getElementById(
+            "roomCodeInput"
+        );
+
+    const code =
+        normalizeRoomCode(
+            input?.value
+        );
+
+    if (code.length !== 6) {
+        setRoomStatus(
+            "Введите 6-значный код."
+        );
+        return;
+    }
+
+    setRoomStatus(
+        "Поиск комнаты..."
+    );
+
+    const roomRef =
+        ref(
+            db,
+            "rooms/" + code
+        );
+
+    const snapshot =
+        await get(roomRef);
+
+    if (!snapshot.exists()) {
+        setRoomStatus(
+            "Комната не найдена."
+        );
+        return;
+    }
+
+    const room =
+        snapshot.val();
+
+    if (room.guest) {
+        setRoomStatus(
+            "Комната уже заполнена."
+        );
+        return;
+    }
+
+    if (room.host === clientId) {
+        setRoomStatus(
+            "Нельзя войти в свою комнату."
+        );
+        return;
+    }
+
+    roomCode = code;
+    isHost = false;
+    opponentId = room.host;
+
+    await update(
+        roomRef,
+        {
+            guest: clientId,
+            status: "playing",
+            players: {
+                ...room.players,
+                [clientId]: {
+                    x: W - 130,
+                    y: H / 2,
+                    hp: 100,
+                    r: 17,
+                    ready: true,
+                    lastUpdate: Date.now()
+                }
+            }
+        }
+    );
+
+    hideLobby();
+
+    resetMultiplayerState();
+
+    listenRoom();
+
+    setRoomStatus(
+        "Подключено."
+    );
+}
+
+function startBotGame() {
+    roomCode = null;
+    isHost = false;
+    opponentId = null;
+
+    hideLobby();
+
+    reset();
+
+    statusEl.textContent =
+        "BOT";
+
+    state.mode =
+        "bot";
+}
+
+function resetMultiplayerState() {
     state = {
-      running: true,
-      time: 30,
-      bullets: [],
-      particles: [],
-      flash: 0,
+        running: true,
+        mode: "online",
+        time: 30,
 
-      hook: {
-        active: false,
-        mode: null,
-        x: 0,
-        y: 0,
-        age: 0,
-        life: .62,
-        startX: 0,
-        startY: 0,
-        endX: 0,
-        endY: 0,
-        bend: [],
-        power: 0,
-        restLength: 0
-      },
+        bullets: [],
+        remoteBullets: [],
+        particles: [],
 
-      hookCooldown: 0,
+        flash: 0,
 
-      aiFireClock: 0,
-      aiMoveClock: 0,
-      aiStrafe: 1,
+        hook: {
+            active: false,
+            mode: null,
+            x: 0,
+            y: 0,
+            age: 0,
+            life: 0.62,
+            startX: 0,
+            startY: 0,
+            endX: 0,
+            endY: 0,
+            bend: [],
+            power: 0,
+            restLength: 260
+        },
 
-      p1: makePlayer(130, H / 2, '#67a7ff', 1),
-      p2: makePlayer(W - 130, H / 2, '#ff6d7f', -1)
+        hookCooldown: 0,
+
+        p1: isHost
+            ? makePlayer(
+                130,
+                H / 2,
+                "#67a7ff",
+                1
+            )
+            : makePlayer(
+                W - 130,
+                H / 2,
+                "#67a7ff",
+                -1
+            ),
+
+        p2: isHost
+            ? makePlayer(
+                W - 130,
+                H / 2,
+                "#ff6d7f",
+                -1
+            )
+            : makePlayer(
+                130,
+                H / 2,
+                "#ff6d7f",
+                1
+            ),
+
+        aiFireClock: 0,
+        aiMoveClock: 0,
+        aiStrafe: 1
+    };
+
+    remote.x =
+        state.p2.x;
+
+    remote.y =
+        state.p2.y;
+
+    remote.hp =
+        state.p2.hp;
+
+    remote.targetX =
+        remote.x;
+
+    remote.targetY =
+        remote.y;
+
+    mouse.x =
+        W / 2;
+
+    mouse.y =
+        H / 2;
+
+    mouse.down = false;
+
+    overlay.classList.remove(
+        "show"
+    );
+
+    updateHud();
+}
+
+function reset() {
+    state = {
+        running: true,
+        mode: "bot",
+        time: 30,
+
+        bullets: [],
+        remoteBullets: [],
+        particles: [],
+
+        flash: 0,
+
+        hook: {
+            active: false,
+            mode: null,
+            x: 0,
+            y: 0,
+            age: 0,
+            life: 0.62,
+            startX: 0,
+            startY: 0,
+            endX: 0,
+            endY: 0,
+            bend: [],
+            power: 0,
+            restLength: 260
+        },
+
+        hookCooldown: 0,
+
+        p1: makePlayer(
+            130,
+            H / 2,
+            "#67a7ff",
+            1
+        ),
+
+        p2: makePlayer(
+            W - 130,
+            H / 2,
+            "#ff6d7f",
+            -1
+        ),
+
+        aiFireClock: 0,
+        aiMoveClock: 0,
+        aiStrafe: 1
     };
 
     mouse.x = W / 2;
     mouse.y = H / 2;
     mouse.down = false;
 
-    overlay.classList.remove('show');
+    overlay.classList.remove(
+        "show"
+    );
 
-    statusEl.textContent = 'ROUND ' + round;
+    statusEl.textContent =
+        "BOT";
 
     updateHud();
-  }
+}
 
-  function arenaBounds(p) {
-    p.x = clamp(
-      p.x,
-      42 + p.r,
-      W - 42 - p.r
+function listenRoom() {
+    if (!roomCode)
+        return;
+
+    if (unsubscribeRoom)
+        unsubscribeRoom();
+
+    const roomRef =
+        ref(
+            db,
+            "rooms/" + roomCode
+        );
+
+    unsubscribeRoom =
+        onValue(
+            roomRef,
+            snapshot => {
+
+                if (!snapshot.exists()) {
+
+                    if (state?.mode === "online") {
+                        finish(
+                            "Комната была закрыта.",
+                            "DISCONNECTED"
+                        );
+                    }
+
+                    return;
+                }
+
+                const room =
+                    snapshot.val();
+
+                if (
+                    room.host === clientId
+                ) {
+                    isHost = true;
+                }
+
+                opponentId =
+                    isHost
+                        ? room.guest
+                        : room.host;
+
+                if (
+                    room.status ===
+                    "waiting"
+                ) {
+
+                    statusEl.textContent =
+                        "WAITING";
+
+                    return;
+                }
+
+                if (
+                    !state ||
+                    state.mode !==
+                    "online"
+                ) {
+
+                    resetMultiplayerState();
+
+                }
+
+                if (
+                    room.time !==
+                    undefined &&
+                    isHost
+                ) {
+
+                    state.time =
+                        Number(
+                            room.time
+                        );
+
+                }
+
+                const players =
+                    room.players ||
+                    {};
+
+                const enemy =
+                    players[
+                        opponentId
+                    ];
+
+                if (enemy) {
+
+                    remote.targetX =
+                        Number(enemy.x);
+
+                    remote.targetY =
+                        Number(enemy.y);
+
+                    remote.hp =
+                        Number(enemy.hp);
+
+                    remote.r =
+                        Number(enemy.r) ||
+                        17;
+
+                    state.p2.hp =
+                        remote.hp;
+
+                    state.p2.r =
+                        remote.r;
+
+                    if (
+                        Math.abs(
+                            remote.x -
+                            remote.targetX
+                        ) > 180 ||
+                        Math.abs(
+                            remote.y -
+                            remote.targetY
+                        ) > 180
+                    ) {
+
+                        remote.x =
+                            remote.targetX;
+
+                        remote.y =
+                            remote.targetY;
+
+                    }
+
+                }
+
+                if (
+                    room.status ===
+                    "finished"
+                ) {
+
+                    if (
+                        room.winner ===
+                        clientId
+                    ) {
+
+                        finish(
+                            "Раунд завершён.",
+                            "YOU WIN"
+                        );
+
+                    } else if (
+                        room.winner ===
+                        "draw"
+                    ) {
+
+                        finish(
+                            "Оба игрока потеряли всё HP.",
+                            "DRAW"
+                        );
+
+                    } else {
+
+                        finish(
+                            "Раунд завершён.",
+                            "YOU LOSE"
+                        );
+
+                    }
+
+                }
+
+            }
+        );
+}
+
+async function sendPlayerState() {
+    if (
+        !roomCode ||
+        !state ||
+        state.mode !== "online"
+    )
+        return;
+
+    const now =
+        performance.now();
+
+    if (
+        now -
+        lastNetworkSend <
+        35
+    )
+        return;
+
+    lastNetworkSend =
+        now;
+
+    const playerRef =
+        ref(
+            db,
+            "rooms/" +
+            roomCode +
+            "/players/" +
+            clientId
+        );
+
+    await update(
+        playerRef,
+        {
+            x: state.p1.x,
+            y: state.p1.y,
+            hp: state.p1.hp,
+            r: state.p1.r,
+            dir: state.p1.dir,
+            lastUpdate: Date.now()
+        }
     );
 
-    p.y = clamp(
-      p.y,
-      42 + p.r,
-      H - 42 - p.r
-    );
-  }
+    if (isHost) {
 
-  function canShoot(p) {
+        await update(
+            ref(
+                db,
+                "rooms/" +
+                roomCode
+            ),
+            {
+                time: state.time
+            }
+        );
+
+    }
+}
+
+async function sendShot(
+    bullet
+) {
+    if (
+        !roomCode ||
+        !state ||
+        state.mode !== "online"
+    )
+        return;
+
+    networkShotId++;
+
+    const id =
+        clientId +
+        "_" +
+        networkShotId;
+
+    await set(
+        ref(
+            db,
+            "rooms/" +
+            roomCode +
+            "/shots/" +
+            id
+        ),
+        {
+            owner: clientId,
+            x: bullet.x,
+            y: bullet.y,
+            vx: bullet.vx,
+            vy: bullet.vy,
+            time: Date.now()
+        }
+    );
+}
+
+function listenShots() {
+    if (!roomCode)
+        return;
+
+    const shotsRef =
+        ref(
+            db,
+            "rooms/" +
+            roomCode +
+            "/shots"
+        );
+
+    onValue(
+        shotsRef,
+        snapshot => {
+
+            if (!snapshot.exists())
+                return;
+
+            const shots =
+                snapshot.val();
+
+            state.remoteBullets =
+                [];
+
+            for (
+                const id in shots
+            ) {
+
+                const shot =
+                    shots[id];
+
+                if (
+                    shot.owner ===
+                    clientId
+                )
+                    continue;
+
+                state.remoteBullets.push({
+                    x: Number(shot.x),
+                    y: Number(shot.y),
+                    vx: Number(shot.vx),
+                    vy: Number(shot.vy),
+                    life: 1.6,
+                    remote: true
+                });
+
+            }
+
+        }
+    );
+}
+
+async function sendDamage(
+    target,
+    amount
+) {
+    if (
+        !roomCode ||
+        !state ||
+        state.mode !== "online"
+    )
+        return;
+
+    if (target !== state.p2)
+        return;
+
+    if (!isHost) {
+
+        await set(
+            ref(
+                db,
+                "rooms/" +
+                roomCode +
+                "/damageRequests/" +
+                clientId +
+                "_" +
+                Date.now()
+            ),
+            {
+                owner: clientId,
+                amount,
+                time: Date.now()
+            }
+        );
+
+        return;
+    }
+
+    await applyNetworkDamage(
+        amount
+    );
+}
+
+async function applyNetworkDamage(
+    amount
+) {
+    if (!isHost)
+        return;
+
+    state.p2.hp =
+        Math.max(
+            0,
+            state.p2.hp -
+            amount
+        );
+
+    const enemyId =
+        opponentId;
+
+    if (!enemyId)
+        return;
+
+    await update(
+        ref(
+            db,
+            "rooms/" +
+            roomCode +
+            "/players/" +
+            enemyId
+        ),
+        {
+            hp: state.p2.hp
+        }
+    );
+
+    if (
+        state.p2.hp <= 0
+    ) {
+
+        await finishOnline(
+            clientId
+        );
+
+    }
+}
+
+function listenDamageRequests() {
+    if (
+        !roomCode ||
+        !isHost
+    )
+        return;
+
+    const requestRef =
+        ref(
+            db,
+            "rooms/" +
+            roomCode +
+            "/damageRequests"
+        );
+
+    onValue(
+        requestRef,
+        async snapshot => {
+
+            if (!snapshot.exists())
+                return;
+
+            const requests =
+                snapshot.val();
+
+            for (
+                const id in requests
+            ) {
+
+                const request =
+                    requests[id];
+
+                if (
+                    request.owner ===
+                    clientId
+                )
+                    continue;
+
+                await applyNetworkDamage(
+                    Number(
+                        request.amount
+                    )
+                );
+
+                await remove(
+                    ref(
+                        db,
+                        "rooms/" +
+                        roomCode +
+                        "/damageRequests/" +
+                        id
+                    )
+                );
+
+            }
+
+        }
+    );
+}
+
+async function finishOnline(
+    winner
+) {
+    if (
+        !roomCode ||
+        !isHost
+    )
+        return;
+
+    await update(
+        ref(
+            db,
+            "rooms/" +
+            roomCode
+        ),
+        {
+            status: "finished",
+            winner
+        }
+    );
+}
+
+function arenaBounds(p) {
+    p.x =
+        clamp(
+            p.x,
+            42 + p.r,
+            W - 42 - p.r
+        );
+
+    p.y =
+        clamp(
+            p.y,
+            42 + p.r,
+            H - 42 - p.r
+        );
+}
+
+function canShoot(p) {
     return (
-      p.cooldown <= 0 &&
-      state.running &&
-      p.hp > 0
+        p.cooldown <= 0 &&
+        state &&
+        state.running &&
+        p.hp > 0
     );
-  }
+}
 
-  function rayCircleDistance(
+function rayCircleDistance(
     x,
     y,
     dx,
@@ -116,1098 +1291,1563 @@
     cx,
     cy,
     r
-  ) {
-    const ox = x - cx;
-    const oy = y - cy;
+) {
+    const ox =
+        x - cx;
 
-    const b = ox * dx + oy * dy;
+    const oy =
+        y - cy;
+
+    const b =
+        ox * dx +
+        oy * dy;
 
     const c =
-      ox * ox +
-      oy * oy -
-      r * r;
+        ox * ox +
+        oy * oy -
+        r * r;
 
-    const h = b * b - c;
+    const h =
+        b * b -
+        c;
 
     if (h < 0)
-      return Infinity;
+        return Infinity;
 
-    const s = Math.sqrt(h);
+    const s =
+        Math.sqrt(h);
 
-    const t1 = -b - s;
-    const t2 = -b + s;
+    const t1 =
+        -b - s;
+
+    const t2 =
+        -b + s;
 
     if (t1 > 0)
-      return t1;
+        return t1;
 
     if (t2 > 0)
-      return t2;
+        return t2;
 
     return Infinity;
-  }
+}
 
-  function rayWallDistance(
+function rayWallDistance(
     x,
     y,
     dx,
     dy
-  ) {
+) {
     const left = 40;
     const right = W - 40;
     const top = 40;
     const bottom = H - 40;
 
-    let t = Infinity;
+    let t =
+        Infinity;
 
     if (dx < -0.0001)
-      t = Math.min(
-        t,
-        (left - x) / dx
-      );
+        t =
+            Math.min(
+                t,
+                (left - x) / dx
+            );
 
     if (dx > 0.0001)
-      t = Math.min(
-        t,
-        (right - x) / dx
-      );
+        t =
+            Math.min(
+                t,
+                (right - x) / dx
+            );
 
     if (dy < -0.0001)
-      t = Math.min(
-        t,
-        (top - y) / dy
-      );
+        t =
+            Math.min(
+                t,
+                (top - y) / dy
+            );
 
     if (dy > 0.0001)
-      t = Math.min(
-        t,
-        (bottom - y) / dy
-      );
+        t =
+            Math.min(
+                t,
+                (bottom - y) / dy
+            );
 
-    return Math.max(0, t);
-  }
+    return Math.max(
+        0,
+        t
+    );
+}
 
-  function buildHookBend(
+function buildHookBend(
     sx,
     sy,
     ex,
     ey
-  ) {
-    const dx = ex - sx;
-    const dy = ey - sy;
+) {
+    const dx =
+        ex - sx;
 
-    const d = Math.max(
-      1,
-      Math.hypot(dx, dy)
-    );
+    const dy =
+        ey - sy;
 
-    const bendStrength = clamp(
-      38 - d * .045,
-      5,
-      38
-    );
+    const d =
+        Math.max(
+            1,
+            Math.hypot(
+                dx,
+                dy
+            )
+        );
+
+    const bendStrength =
+        clamp(
+            38 -
+            d * .045,
+            5,
+            38
+        );
 
     const count = 12;
     const result = [];
 
-    for (let i = 1; i < count; i++) {
-      const t = i / count;
+    for (
+        let i = 1;
+        i < count;
+        i++
+    ) {
 
-      const falloff =
-        Math.sin(Math.PI * t);
+        const t =
+            i / count;
 
-      result.push({
-        t,
+        const falloff =
+            Math.sin(
+                Math.PI * t
+            );
 
-        offset:
-          (Math.random() - .5) *
-          2 *
-          bendStrength *
-          falloff,
+        result.push({
+            t,
+            offset:
+                (
+                    Math.random() -
+                    .5
+                ) *
+                2 *
+                bendStrength *
+                falloff,
+            wave:
+                .55 +
+                Math.random() *
+                1.45,
+            phase:
+                Math.random() *
+                Math.PI *
+                2
+        });
 
-        wave:
-          .55 +
-          Math.random() * 1.45,
-
-        phase:
-          Math.random() *
-          Math.PI *
-          2
-      });
     }
 
     return result;
-  }
+}
 
-  function hookImpact(
+function hookImpact(
     x,
     y,
     kind
-  ) {
-    for (let i = 0; i < 18; i++) {
-      const a =
-        Math.random() *
-        Math.PI *
-        2;
+) {
+    for (
+        let i = 0;
+        i < 18;
+        i++
+    ) {
 
-      const s =
-        80 +
-        Math.random() *
-        240;
+        const a =
+            Math.random() *
+            Math.PI *
+            2;
 
-      state.particles.push({
-        x,
-        y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life:
-          .22 +
-          Math.random() * .32,
-        size:
-          2 +
-          Math.random() * 3
-      });
+        const s =
+            80 +
+            Math.random() *
+            240;
+
+        state.particles.push({
+            x,
+            y,
+            vx:
+                Math.cos(a) *
+                s,
+            vy:
+                Math.sin(a) *
+                s,
+            life:
+                .22 +
+                Math.random() *
+                .32,
+            size:
+                2 +
+                Math.random() *
+                3
+        });
+
     }
 
     state.flash =
-      kind === 'player'
-        ? .11
-        : .06;
-  }
+        kind === "player"
+            ? .11
+            : .06;
+}
 
-  function launchHook(
+function launchHook(
     targetX,
     targetY
-  ) {
+) {
     if (
-      !state.running ||
-      state.hookCooldown > 0 ||
-      state.p1.hp <= 0
+        !state.running ||
+        state.hookCooldown > 0 ||
+        state.p1.hp <= 0
     )
-      return;
+        return;
 
-    const p = state.p1;
+    const p =
+        state.p1;
 
-    let dx = targetX - p.x;
-    let dy = targetY - p.y;
+    let dx =
+        targetX -
+        p.x;
 
-    const d = Math.max(
-      .001,
-      Math.hypot(dx, dy)
-    );
+    let dy =
+        targetY -
+        p.y;
+
+    const d =
+        Math.max(
+            .001,
+            Math.hypot(
+                dx,
+                dy
+            )
+        );
 
     dx /= d;
     dy /= d;
 
-    const wallT = Math.min(
-      820,
-      rayWallDistance(
-        p.x,
-        p.y,
-        dx,
-        dy
-      )
-    );
+    const wallT =
+        Math.min(
+            820,
+            rayWallDistance(
+                p.x,
+                p.y,
+                dx,
+                dy
+            )
+        );
+
+    const target =
+        state.mode === "bot"
+            ? state.p2
+            : {
+                x: remote.x,
+                y: remote.y,
+                r: remote.r
+            };
 
     const playerT =
-      rayCircleDistance(
-        p.x,
-        p.y,
-        dx,
-        dy,
-        state.p2.x,
-        state.p2.y,
-        state.p2.r + 6
-      );
+        rayCircleDistance(
+            p.x,
+            p.y,
+            dx,
+            dy,
+            target.x,
+            target.y,
+            target.r + 6
+        );
 
     const hitPlayer =
-      playerT <= wallT &&
-      playerT <= 820;
+        playerT <= wallT &&
+        playerT <= 820;
 
     const hitT =
-      hitPlayer
-        ? playerT
-        : wallT;
+        hitPlayer
+            ? playerT
+            : wallT;
 
     const ex =
-      p.x +
-      dx * hitT;
+        p.x +
+        dx *
+        hitT;
 
     const ey =
-      p.y +
-      dy * hitT;
+        p.y +
+        dy *
+        hitT;
 
-    const pullDistance =
-      Math.max(
-        40,
-        Math.min(
-          820,
-          hitT
-        )
-      );
+    state.hookCooldown =
+        2;
 
-    state.hookCooldown = 2;
-
-    state.hook.active = true;
+    state.hook.active =
+        true;
 
     state.hook.mode =
-      hitPlayer
-        ? 'player'
-        : 'wall';
+        hitPlayer
+            ? "player"
+            : "wall";
 
-    state.hook.x = ex;
-    state.hook.y = ey;
+    state.hook.x =
+        ex;
 
-    state.hook.age = 0;
+    state.hook.y =
+        ey;
 
-    state.hook.startX = p.x;
-    state.hook.startY = p.y;
+    state.hook.age =
+        0;
 
-    state.hook.endX = ex;
-    state.hook.endY = ey;
+    state.hook.startX =
+        p.x;
 
-    state.hook.restLength =
-      pullDistance;
+    state.hook.startY =
+        p.y;
+
+    state.hook.endX =
+        ex;
+
+    state.hook.endY =
+        ey;
 
     state.hook.bend =
-      buildHookBend(
-        p.x,
-        p.y,
-        ex,
-        ey
-      );
+        buildHookBend(
+            p.x,
+            p.y,
+            ex,
+            ey
+        );
 
     state.hook.power =
-      clamp(
-        .9 +
-        Math.pow(
-          pullDistance / 360,
-          1.2
-        ),
-        1.05,
-        3.4
-      );
+        clamp(
+            .9 +
+            Math.pow(
+                Math.max(
+                    40,
+                    hitT
+                ) / 360,
+                1.2
+            ),
+            1.05,
+            3.4
+        );
+
+    state.hook.restLength =
+        Math.max(
+            120,
+            Math.min(
+                500,
+                hitT
+            )
+        );
 
     if (hitPlayer) {
-      const t = state.p2;
 
-      const p0x = p.x;
-      const p0y = p.y;
+        const t =
+            state.p2;
 
-      const t0x = t.x;
-      const t0y = t.y;
+        const tx =
+            t.x -
+            p.x;
 
-      const strength =
-        720 *
-        state.hook.power;
+        const ty =
+            t.y -
+            p.y;
 
-      const tx = t0x - p0x;
-      const ty = t0y - p0y;
+        const td =
+            Math.max(
+                .001,
+                Math.hypot(
+                    tx,
+                    ty
+                )
+            );
 
-      const td = Math.max(
-        .001,
-        Math.hypot(tx, ty)
-      );
+        const ux =
+            tx / td;
 
-      const ux = tx / td;
-      const uy = ty / td;
+        const uy =
+            ty / td;
 
-      p.hookVx =
-        ux *
-        strength *
-        .86;
+        const strength =
+            720 *
+            state.hook.power;
 
-      p.hookVy =
-        uy *
-        strength *
-        .86;
+        p.hookVx =
+            ux *
+            strength *
+            .86;
 
-      t.hookVx =
-        -ux *
-        strength *
-        1.04;
+        p.hookVy =
+            uy *
+            strength *
+            .86;
 
-      t.hookVy =
-        -uy *
-        strength *
-        1.04;
+        if (
+            state.mode ===
+            "bot"
+        ) {
 
-      state.hook.endX = t0x;
-      state.hook.endY = t0y;
+            t.hookVx =
+                -ux *
+                strength *
+                1.04;
 
-      hookImpact(
-        t0x,
-        t0y,
-        'player'
-      );
-    } else {
-      const strength =
-        570 *
-        state.hook.power;
+            t.hookVy =
+                -uy *
+                strength *
+                1.04;
 
-      p.hookVx =
-        dx *
-        strength;
+        }
 
-      p.hookVy =
-        dy *
-        strength;
-
-      hookImpact(
-        ex,
-        ey,
-        'wall'
-      );
-    }
-  }
-
-  function updateHook(dt) {
-    state.hookCooldown =
-      Math.max(
-        0,
-        state.hookCooldown - dt
-      );
-
-    if (state.hook.active) {
-      state.hook.age += dt;
-
-      if (
-        state.hook.mode ===
-        'player'
-      ) {
         state.hook.endX =
-          state.p2.x;
+            t.x;
 
         state.hook.endY =
-          state.p2.y;
+            t.y;
 
-        const dx =
-          state.p2.x -
-          state.p1.x;
+        hookImpact(
+            t.x,
+            t.y,
+            "player"
+        );
 
-        const dy =
-          state.p2.y -
-          state.p1.y;
+    } else {
 
-        const distance =
-          Math.max(
-            1,
-            Math.hypot(
-              dx,
-              dy
-            )
-          );
+        const strength =
+            570 *
+            state.hook.power;
 
-        const ux = dx / distance;
-        const uy = dy / distance;
+        p.hookVx =
+            dx *
+            strength;
 
-        const stretch =
-          Math.max(
+        p.hookVy =
+            dy *
+            strength;
+
+        hookImpact(
+            ex,
+            ey,
+            "wall"
+        );
+
+    }
+}
+
+function updateHook(dt) {
+    state.hookCooldown =
+        Math.max(
             0,
-            distance -
-            state.hook.restLength *
-            .38
-          );
+            state.hookCooldown -
+            dt
+        );
 
-        const spring =
-          Math.min(
-            1900,
-            stretch *
-            (
-              8.5 +
-              state.hook.power *
-              2.2
-            )
-          );
+    if (state.hook.active) {
 
-        state.p1.hookVx +=
-          ux *
-          spring *
-          dt;
+        state.hook.age +=
+            dt;
 
-        state.p1.hookVy +=
-          uy *
-          spring *
-          dt;
+        if (
+            state.hook.mode ===
+            "player"
+        ) {
 
-        state.p2.hookVx -=
-          ux *
-          spring *
-          1.24 *
-          dt;
+            if (
+                state.mode ===
+                "online"
+            ) {
 
-        state.p2.hookVy -=
-          uy *
-          spring *
-          1.24 *
-          dt;
-      } else {
-        const dx =
-          state.hook.endX -
-          state.p1.x;
+                state.hook.endX =
+                    remote.x;
 
-        const dy =
-          state.hook.endY -
-          state.p1.y;
+                state.hook.endY =
+                    remote.y;
 
-        const distance =
-          Math.max(
-            1,
-            Math.hypot(
-              dx,
-              dy
-            )
-          );
+            } else {
 
-        const ux = dx / distance;
-        const uy = dy / distance;
+                state.hook.endX =
+                    state.p2.x;
 
-        const stretch =
-          Math.max(
-            0,
-            distance -
-            state.hook.restLength *
-            .28
-          );
+                state.hook.endY =
+                    state.p2.y;
 
-        const spring =
-          Math.min(
-            2200,
-            stretch *
-            (
-              10 +
-              state.hook.power *
-              2.6
-            )
-          );
+            }
 
-        state.p1.hookVx +=
-          ux *
-          spring *
-          dt;
+            const dx =
+                state.hook.endX -
+                state.p1.x;
 
-        state.p1.hookVy +=
-          uy *
-          spring *
-          dt;
-      }
+            const dy =
+                state.hook.endY -
+                state.p1.y;
 
-      if (
-        state.hook.age >=
-        state.hook.life
-      ) {
-        state.hook.active = false;
-      }
+            const distance =
+                Math.max(
+                    1,
+                    Math.hypot(
+                        dx,
+                        dy
+                    )
+                );
+
+            const ux =
+                dx / distance;
+
+            const uy =
+                dy / distance;
+
+            const stretch =
+                Math.max(
+                    0,
+                    distance -
+                    state.hook.restLength *
+                    .38
+                );
+
+            const spring =
+                Math.min(
+                    1900,
+                    stretch *
+                    (
+                        8.5 +
+                        state.hook.power *
+                        2.2
+                    )
+                );
+
+            state.p1.hookVx +=
+                ux *
+                spring *
+                dt;
+
+            state.p1.hookVy +=
+                uy *
+                spring *
+                dt;
+
+            if (
+                state.mode ===
+                "bot"
+            ) {
+
+                state.p2.hookVx -=
+                    ux *
+                    spring *
+                    1.24 *
+                    dt;
+
+                state.p2.hookVy -=
+                    uy *
+                    spring *
+                    1.24 *
+                    dt;
+
+            }
+
+        } else {
+
+            const dx =
+                state.hook.endX -
+                state.p1.x;
+
+            const dy =
+                state.hook.endY -
+                state.p1.y;
+
+            const distance =
+                Math.max(
+                    1,
+                    Math.hypot(
+                        dx,
+                        dy
+                    )
+                );
+
+            const ux =
+                dx / distance;
+
+            const uy =
+                dy / distance;
+
+            const stretch =
+                Math.max(
+                    0,
+                    distance -
+                    state.hook.restLength *
+                    .28
+                );
+
+            const spring =
+                Math.min(
+                    2200,
+                    stretch *
+                    (
+                        10 +
+                        state.hook.power *
+                        2.6
+                    )
+                );
+
+            state.p1.hookVx +=
+                ux *
+                spring *
+                dt;
+
+            state.p1.hookVy +=
+                uy *
+                spring *
+                dt;
+
+        }
+
+        if (
+            state.hook.age >=
+            state.hook.life
+        ) {
+
+            state.hook.active =
+                false;
+
+        }
     }
 
     state.p1.hookVx *=
-      Math.exp(-1.35 * dt);
+        Math.exp(
+            -1.35 * dt
+        );
 
     state.p1.hookVy *=
-      Math.exp(-1.35 * dt);
-
-    state.p2.hookVx *=
-      Math.exp(-1.35 * dt);
-
-    state.p2.hookVy *=
-      Math.exp(-1.35 * dt);
+        Math.exp(
+            -1.35 * dt
+        );
 
     if (
-      Math.hypot(
-        state.p1.hookVx,
-        state.p1.hookVy
-      ) < 5
+        state.mode ===
+        "bot"
     ) {
-      state.p1.hookVx = 0;
-      state.p1.hookVy = 0;
+
+        state.p2.hookVx *=
+            Math.exp(
+                -1.35 * dt
+            );
+
+        state.p2.hookVy *=
+            Math.exp(
+                -1.35 * dt
+            );
+
     }
 
     if (
-      Math.hypot(
-        state.p2.hookVx,
-        state.p2.hookVy
-      ) < 5
+        Math.hypot(
+            state.p1.hookVx,
+            state.p1.hookVy
+        ) < 5
     ) {
-      state.p2.hookVx = 0;
-      state.p2.hookVy = 0;
-    }
-  }
 
-  function shoot(
+        state.p1.hookVx = 0;
+        state.p1.hookVy = 0;
+
+    }
+
+    if (
+        state.mode === "bot" &&
+        Math.hypot(
+            state.p2.hookVx,
+            state.p2.hookVy
+        ) < 5
+    ) {
+
+        state.p2.hookVx = 0;
+        state.p2.hookVy = 0;
+
+    }
+}
+
+async function shoot(
     shooter,
     targetX,
     targetY
-  ) {
+) {
     if (!canShoot(shooter))
-      return;
+        return;
 
     let dx =
-      targetX -
-      shooter.x;
+        targetX -
+        shooter.x;
 
     let dy =
-      targetY -
-      shooter.y;
+        targetY -
+        shooter.y;
 
     const d =
-      Math.max(
-        .001,
-        len(dx, dy)
-      );
+        Math.max(
+            .001,
+            len(dx, dy)
+        );
 
     dx /= d;
     dy /= d;
 
     shooter.dir =
-      dx >= 0
-        ? 1
-        : -1;
+        dx >= 0
+            ? 1
+            : -1;
 
     shooter.cooldown =
-      shooter === state.p1
-        ? 1
-        : 1;
+        1;
 
-    shooter.recoil = .12;
+    shooter.recoil =
+        .12;
 
-    state.bullets.push({
-      x:
-        shooter.x +
-        dx * 24,
-
-      y:
-        shooter.y +
-        dy * 24,
-
-      vx:
-        dx * 510,
-
-      vy:
-        dy * 510,
-
-      life: 1.6,
-
-      owner: shooter
-    });
-
-    for (let i = 0; i < 5; i++) {
-      state.particles.push({
+    const bullet = {
         x:
-          shooter.x +
-          dx * 28,
+            shooter.x +
+            dx *
+            24,
 
         y:
-          shooter.y +
-          dy * 28,
+            shooter.y +
+            dy *
+            24,
 
         vx:
-          dx *
-          (
-            120 +
-            Math.random() * 120
-          ) +
-          (
-            Math.random() - .5
-          ) *
-          70,
+            dx *
+            510,
 
         vy:
-          dy *
-          (
-            120 +
-            Math.random() * 120
-          ) +
-          (
-            Math.random() - .5
-          ) *
-          70,
+            dy *
+            510,
 
         life:
-          .18 +
-          Math.random() * .16,
+            1.6,
 
-        size:
-          2 +
-          Math.random() * 2
-      });
+        owner:
+            shooter
+    };
+
+    state.bullets.push(
+        bullet
+    );
+
+    if (
+        state.mode ===
+        "online" &&
+        shooter ===
+        state.p1
+    ) {
+
+        sendShot(
+            bullet
+        );
     }
-  }
 
-  function damage(
+    for (
+        let i = 0;
+        i < 5;
+        i++
+    ) {
+
+        state.particles.push({
+            x:
+                shooter.x +
+                dx *
+                28,
+
+            y:
+                shooter.y +
+                dy *
+                28,
+
+            vx:
+                dx *
+                (
+                    120 +
+                    Math.random() *
+                    120
+                ) +
+                (
+                    Math.random() -
+                    .5
+                ) *
+                70,
+
+            vy:
+                dy *
+                (
+                    120 +
+                    Math.random() *
+                    120
+                ) +
+                (
+                    Math.random() -
+                    .5
+                ) *
+                70,
+
+            life:
+                .18 +
+                Math.random() *
+                .16,
+
+            size:
+                2 +
+                Math.random() *
+                2
+        });
+
+    }
+}
+
+async function damage(
     target,
     amount
-  ) {
+) {
     if (
-      target === state.p2 &&
-      bonusState.damage > 0
+        state.mode ===
+        "online"
     ) {
-      amount +=
-        bonusState.damage;
+
+        if (
+            target ===
+            state.p2
+        ) {
+
+            await sendDamage(
+                target,
+                amount
+            );
+
+        }
+
+        return;
     }
 
     target.hp =
-      Math.max(
-        0,
-        target.hp - amount
-      );
+        Math.max(
+            0,
+            target.hp -
+            amount
+        );
 
-    target.hurt = .14;
+    target.hurt =
+        .14;
 
-    state.flash = .08;
+    state.flash =
+        .08;
 
-    for (let i = 0; i < 10; i++) {
-      const a =
-        Math.random() *
-        Math.PI *
-        2;
+    for (
+        let i = 0;
+        i < 10;
+        i++
+    ) {
 
-      state.particles.push({
-        x: target.x,
-        y: target.y,
+        const a =
+            Math.random() *
+            Math.PI *
+            2;
 
-        vx:
-          Math.cos(a) *
-          (
-            90 +
-            Math.random() * 180
-          ),
+        state.particles.push({
+            x:
+                target.x,
 
-        vy:
-          Math.sin(a) *
-          (
-            90 +
-            Math.random() * 180
-          ),
+            y:
+                target.y,
 
-        life:
-          .25 +
-          Math.random() * .25,
+            vx:
+                Math.cos(a) *
+                (
+                    90 +
+                    Math.random() *
+                    180
+                ),
 
-        size:
-          2 +
-          Math.random() * 2.5
-      });
+            vy:
+                Math.sin(a) *
+                (
+                    90 +
+                    Math.random() *
+                    180
+                ),
+
+            life:
+                .25 +
+                Math.random() *
+                .25,
+
+            size:
+                2 +
+                Math.random() *
+                2.5
+        });
+
     }
 
     updateHud();
-  }
+}
 
-  function updatePlayer(dt) {
+function updatePlayer(dt) {
     let dx = 0;
     let dy = 0;
 
     if (
-      keys.has('w') ||
-      keys.has('arrowup')
+        keys.has("w") ||
+        keys.has("arrowup")
     )
-      dy--;
+        dy--;
 
     if (
-      keys.has('s') ||
-      keys.has('arrowdown')
+        keys.has("s") ||
+        keys.has("arrowdown")
     )
-      dy++;
+        dy++;
 
     if (
-      keys.has('a') ||
-      keys.has('arrowleft')
+        keys.has("a") ||
+        keys.has("arrowleft")
     )
-      dx--;
+        dx--;
 
     if (
-      keys.has('d') ||
-      keys.has('arrowright')
+        keys.has("d") ||
+        keys.has("arrowright")
     )
-      dx++;
+        dx++;
 
     const d =
-      len(dx, dy) || 1;
+        len(dx, dy) ||
+        1;
 
     state.p1.x +=
-      dx / d *
-      state.p1.speed *
-      dt;
+        dx / d *
+        state.p1.speed *
+        dt;
 
     state.p1.y +=
-      dy / d *
-      state.p1.speed *
-      dt;
+        dy / d *
+        state.p1.speed *
+        dt;
 
     state.p1.x +=
-      state.p1.hookVx *
-      dt;
+        state.p1.hookVx *
+        dt;
 
     state.p1.y +=
-      state.p1.hookVy *
-      dt;
+        state.p1.hookVy *
+        dt;
 
-    arenaBounds(state.p1);
+    arenaBounds(
+        state.p1
+    );
 
     state.p1.cooldown =
-      Math.max(
-        0,
-        state.p1.cooldown - dt
-      );
+        Math.max(
+            0,
+            state.p1.cooldown -
+            dt
+        );
 
     state.p1.hurt =
-      Math.max(
-        0,
-        state.p1.hurt - dt
-      );
+        Math.max(
+            0,
+            state.p1.hurt -
+            dt
+        );
 
     state.p1.recoil =
-      Math.max(
-        0,
-        state.p1.recoil - dt
-      );
+        Math.max(
+            0,
+            state.p1.recoil -
+            dt
+        );
 
-    if (mouse.down) {
-      shoot(
-        state.p1,
-        mouse.x,
-        mouse.y
-      );
-    }
-  }
+    if (mouse.down)
+        shoot(
+            state.p1,
+            mouse.x,
+            mouse.y
+        );
+}
 
-  function updateBot(dt) {
-    const b = state.p2;
-    const p = state.p1;
+function updateBot(dt) {
+    const b =
+        state.p2;
+
+    const p =
+        state.p1;
 
     b.cooldown =
-      Math.max(
-        0,
-        b.cooldown - dt
-      );
+        Math.max(
+            0,
+            b.cooldown -
+            dt
+        );
 
     b.hurt =
-      Math.max(
-        0,
-        b.hurt - dt
-      );
+        Math.max(
+            0,
+            b.hurt -
+            dt
+        );
 
     b.recoil =
-      Math.max(
-        0,
-        b.recoil - dt
-      );
+        Math.max(
+            0,
+            b.recoil -
+            dt
+        );
 
     b.x +=
-      b.hookVx *
-      dt;
+        b.hookVx *
+        dt;
 
     b.y +=
-      b.hookVy *
-      dt;
+        b.hookVy *
+        dt;
 
-    const dx = p.x - b.x;
-    const dy = p.y - b.y;
+    const dx =
+        p.x - b.x;
+
+    const dy =
+        p.y - b.y;
 
     const d =
-      Math.max(
-        1,
-        len(dx, dy)
-      );
+        Math.max(
+            1,
+            len(dx, dy)
+        );
 
-    state.aiMoveClock -= dt;
+    state.aiMoveClock -=
+        dt;
 
     if (
-      state.aiMoveClock <= 0
+        state.aiMoveClock <= 0
     ) {
-      state.aiMoveClock =
-        .7 +
-        Math.random() * .9;
 
-      state.aiStrafe *= -1;
+        state.aiMoveClock =
+            .7 +
+            Math.random() *
+            .9;
+
+        state.aiStrafe *=
+            -1;
+
     }
 
     const desired =
-      d > 360
-        ? 1
-        : d < 235
-          ? -1
-          : 0;
+        d > 360
+            ? 1
+            : d < 235
+                ? -1
+                : 0;
 
     let mx =
-      dx / d * desired +
-      (-dy / d) *
-      state.aiStrafe *
-      .72;
+        dx / d *
+        desired +
+        (
+            -dy / d
+        ) *
+        state.aiStrafe *
+        .72;
 
     let my =
-      dy / d * desired +
-      (dx / d) *
-      state.aiStrafe *
-      .72;
+        dy / d *
+        desired +
+        (
+            dx / d
+        ) *
+        state.aiStrafe *
+        .72;
 
     const ml =
-      len(mx, my) || 1;
+        len(mx, my) ||
+        1;
 
     b.x +=
-      mx / ml *
-      b.speed *
-      .72 *
-      dt;
+        mx / ml *
+        b.speed *
+        .72 *
+        dt;
 
     b.y +=
-      my / ml *
-      b.speed *
-      .72 *
-      dt;
+        my / ml *
+        b.speed *
+        .72 *
+        dt;
 
     arenaBounds(b);
 
-    state.aiFireClock -= dt;
+    state.aiFireClock -=
+        dt;
 
     if (
-      state.aiFireClock <= 0 &&
-      d < 620
+        state.aiFireClock <= 0 &&
+        d < 620
     ) {
-      state.aiFireClock =
-        .32 +
-        Math.random() * .38;
 
-      shoot(
-        b,
-        p.x +
+        state.aiFireClock =
+            .32 +
+            Math.random() *
+            .38;
+
+        shoot(
+            b,
+            p.x +
+            (
+                Math.random() -
+                .5
+            ) *
+            20,
+            p.y +
+            (
+                Math.random() -
+                .5
+            ) *
+            20
+        );
+
+    }
+}
+
+function updateRemotePlayer(dt) {
+    if (
+        state.mode !==
+        "online"
+    )
+        return;
+
+    remote.x +=
         (
-          Math.random() - .5
-        ) * 20,
+            remote.targetX -
+            remote.x
+        ) *
+        Math.min(
+            1,
+            dt * 15
+        );
 
-        p.y +
+    remote.y +=
         (
-          Math.random() - .5
-        ) * 20
-      );
-    }
-  }
+            remote.targetY -
+            remote.y
+        ) *
+        Math.min(
+            1,
+            dt * 15
+        );
 
-  function updateBullets(dt) {
+    state.p2.x =
+        remote.x;
+
+    state.p2.y =
+        remote.y;
+
+    state.p2.hp =
+        remote.hp;
+
+    state.p2.r =
+        remote.r;
+
+    state.p2.hurt =
+        Math.max(
+            0,
+            state.p2.hurt -
+            dt
+        );
+}
+
+function updateBullets(dt) {
     for (
-      let i =
-        state.bullets.length - 1;
-
-      i >= 0;
-
-      i--
+        let i =
+            state.bullets.length - 1;
+        i >= 0;
+        i--
     ) {
-      const b =
-        state.bullets[i];
 
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
+        const b =
+            state.bullets[i];
 
-      b.life -= dt;
+        b.x +=
+            b.vx *
+            dt;
 
-      if (
-        b.life <= 0 ||
-        b.x < 0 ||
-        b.y < 0 ||
-        b.x > W ||
-        b.y > H
-      ) {
-        state.bullets.splice(i, 1);
-        continue;
-      }
+        b.y +=
+            b.vy *
+            dt;
 
-      const target =
-        b.owner === state.p1
-          ? state.p2
-          : state.p1;
+        b.life -=
+            dt;
 
-      if (
-        dist(b, target) <=
-        target.r + 5
-      ) {
-        damage(target, 25);
+        if (
+            b.life <= 0 ||
+            b.x < 0 ||
+            b.y < 0 ||
+            b.x > W ||
+            b.y > H
+        ) {
 
-        state.bullets.splice(i, 1);
-      }
+            state.bullets.splice(
+                i,
+                1
+            );
+
+            continue;
+        }
+
+        const target =
+            b.owner ===
+            state.p1
+                ? state.p2
+                : state.p1;
+
+        if (
+            dist(
+                b,
+                target
+            ) <=
+            target.r + 5
+        ) {
+
+            damage(
+                target,
+                25
+            );
+
+            state.bullets.splice(
+                i,
+                1
+            );
+        }
     }
-  }
 
-  function updateParticles(dt) {
+    if (
+        state.mode !==
+        "online"
+    )
+        return;
+
     for (
-      let i =
-        state.particles.length - 1;
-
-      i >= 0;
-
-      i--
+        let i =
+            state.remoteBullets.length - 1;
+        i >= 0;
+        i--
     ) {
-      const p =
-        state.particles[i];
 
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
+        const b =
+            state.remoteBullets[i];
 
-      p.vx *= .92;
-      p.vy *= .92;
+        b.x +=
+            b.vx *
+            dt;
 
-      p.life -= dt;
+        b.y +=
+            b.vy *
+            dt;
 
-      if (p.life <= 0) {
-        state.particles.splice(i, 1);
-      }
+        b.life -=
+            dt;
+
+        if (
+            b.life <= 0 ||
+            b.x < 0 ||
+            b.y < 0 ||
+            b.x > W ||
+            b.y > H
+        ) {
+
+            state.remoteBullets.splice(
+                i,
+                1
+            );
+
+            continue;
+        }
+
+        if (
+            dist(
+                b,
+                state.p1
+            ) <=
+            state.p1.r + 5
+        ) {
+
+            state.p1.hp =
+                Math.max(
+                    0,
+                    state.p1.hp -
+                    25
+                );
+
+            state.p1.hurt =
+                .14;
+
+            state.flash =
+                .08;
+
+            state.remoteBullets.splice(
+                i,
+                1
+            );
+
+            updateHud();
+
+            if (
+                state.p1.hp <= 0
+            ) {
+
+                finishOnline(
+                    opponentId
+                );
+
+            }
+        }
     }
-  }
+}
 
-  function finish(
+function updateParticles(dt) {
+    for (
+        let i =
+            state.particles.length - 1;
+        i >= 0;
+        i--
+    ) {
+
+        const p =
+            state.particles[i];
+
+        p.x +=
+            p.vx *
+            dt;
+
+        p.y +=
+            p.vy *
+            dt;
+
+        p.vx *=
+            .92;
+
+        p.vy *=
+            .92;
+
+        p.life -=
+            dt;
+
+        if (
+            p.life <= 0
+        ) {
+
+            state.particles.splice(
+                i,
+                1
+            );
+        }
+    }
+}
+
+function finish(
     text,
     title
-  ) {
-    state.running = false;
+) {
+    state.running =
+        false;
 
     resultTitle.textContent =
-      title;
+        title;
 
     resultText.textContent =
-      text;
+        text;
 
-    overlay.classList.add('show');
-  }
+    overlay.classList.add(
+        "show"
+    );
+}
 
-  function checkEnd() {
+function checkEnd() {
     if (
-      state.p1.hp <= 0 &&
-      state.p2.hp <= 0
+        state.p1.hp <= 0 &&
+        state.p2.hp <= 0
     ) {
-      finish(
-        'Оба игрока потеряли всё HP.',
-        'DRAW'
-      );
 
-      return true;
+        finish(
+            "Оба игрока потеряли всё HP.",
+            "DRAW"
+        );
+
+        return true;
     }
 
-    if (state.p2.hp <= 0) {
-      finish(
-        'BOT выбыл из раунда.',
-        'YOU WIN'
-      );
+    if (
+        state.p2.hp <= 0
+    ) {
 
-      return true;
+        finish(
+            state.mode ===
+                "online"
+                ? "Противник выбыл из раунда."
+                : "BOT выбыл из раунда.",
+            "YOU WIN"
+        );
+
+        return true;
     }
 
-    if (state.p1.hp <= 0) {
-      finish(
-        'Твой персонаж выбыл из раунда.',
-        'YOU LOSE'
-      );
+    if (
+        state.p1.hp <= 0
+    ) {
 
-      return true;
+        finish(
+            "Твой персонаж выбыл из раунда.",
+            "YOU LOSE"
+        );
+
+        return true;
     }
 
-    if (state.time <= 0) {
-      if (
-        state.p1.hp ===
-        state.p2.hp
-      ) {
-        finish(
-          'Время вышло — одинаковое HP.',
-          'DRAW'
-        );
-      } else if (
-        state.p1.hp >
-        state.p2.hp
-      ) {
-        finish(
-          'Время вышло — у тебя осталось больше HP.',
-          'YOU WIN'
-        );
-      } else {
-        finish(
-          'Время вышло — у BOT осталось больше HP.',
-          'YOU LOSE'
-        );
-      }
+    if (
+        state.time <= 0
+    ) {
 
-      return true;
+        if (
+            state.p1.hp ===
+            state.p2.hp
+        ) {
+
+            finish(
+                "Время вышло — одинаковое HP.",
+                "DRAW"
+            );
+
+        } else if (
+            state.p1.hp >
+            state.p2.hp
+        ) {
+
+            finish(
+                "Время вышло — у тебя осталось больше HP.",
+                "YOU WIN"
+            );
+
+        } else {
+
+            finish(
+                "Время вышло — у противника осталось больше HP.",
+                "YOU LOSE"
+            );
+        }
+
+        return true;
     }
 
     return false;
-  }
+}
 
-  function updateHud() {
+function updateHud() {
+    if (!state)
+        return;
+
     p1HpText.textContent =
-      Math.ceil(state.p1.hp);
+        Math.ceil(
+            state.p1.hp
+        );
 
     p2HpText.textContent =
-      Math.ceil(state.p2.hp);
+        Math.ceil(
+            state.p2.hp
+        );
 
     p1Health.style.width =
-      state.p1.hp + '%';
+        state.p1.hp +
+        "%";
 
     p2Health.style.width =
-      state.p2.hp + '%';
+        state.p2.hp +
+        "%";
 
     timeEl.textContent =
-      state.time.toFixed(1);
-  }
+        Math.max(
+            0,
+            state.time
+        ).toFixed(1);
+}
 
-  function drawGrid() {
-    ctx.fillStyle = '#0b1017';
+function drawGrid() {
+    ctx.fillStyle =
+        "#0b1017";
 
     ctx.fillRect(
-      0,
-      0,
-      W,
-      H
+        0,
+        0,
+        W,
+        H
     );
 
     ctx.strokeStyle =
-      'rgba(125,150,190,.08)';
+        "rgba(125,150,190,.08)";
 
     ctx.lineWidth = 1;
 
     for (
-      let x = 0;
-      x <= W;
-      x += 48
+        let x = 0;
+        x <= W;
+        x += 48
     ) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+
     }
 
     for (
-      let y = 0;
-      y <= H;
-      y += 48
+        let y = 0;
+        y <= H;
+        y += 48
     ) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+
     }
 
     ctx.strokeStyle =
-      'rgba(145,165,195,.28)';
+        "rgba(145,165,195,.28)";
 
     ctx.lineWidth = 2;
 
     ctx.strokeRect(
-      40,
-      40,
-      W - 80,
-      H - 80
+        40,
+        40,
+        W - 80,
+        H - 80
     );
 
-    ctx.setLineDash([7, 9]);
+    ctx.setLineDash([
+        7,
+        9
+    ]);
 
     ctx.strokeStyle =
-      'rgba(145,165,195,.14)';
+        "rgba(145,165,195,.14)";
 
     ctx.beginPath();
 
     ctx.moveTo(
-      W / 2,
-      40
+        W / 2,
+        40
     );
 
     ctx.lineTo(
-      W / 2,
-      H - 40
+        W / 2,
+        H - 40
     );
 
     ctx.stroke();
@@ -1215,74 +2855,87 @@
     ctx.setLineDash([]);
 
     ctx.fillStyle =
-      'rgba(145,165,195,.055)';
+        "rgba(145,165,195,.055)";
 
     ctx.beginPath();
 
     ctx.arc(
-      W / 2,
-      H / 2,
-      95,
-      0,
-      Math.PI * 2
+        W / 2,
+        H / 2,
+        95,
+        0,
+        Math.PI * 2
     );
 
     ctx.fill();
 
     ctx.strokeStyle =
-      'rgba(145,165,195,.12)';
+        "rgba(145,165,195,.12)";
 
     ctx.beginPath();
 
     ctx.arc(
-      W / 2,
-      H / 2,
-      95,
-      0,
-      Math.PI * 2
+        W / 2,
+        H / 2,
+        95,
+        0,
+        Math.PI * 2
     );
 
     ctx.stroke();
-  }
+}
 
-  function drawPlayer(p) {
+function drawPlayer(p) {
     ctx.save();
 
     ctx.translate(
-      p.x,
-      p.y
+        p.x,
+        p.y
     );
 
-    const a =
-      Math.atan2(
-        (
-          p === state.p1
-            ? mouse.y
-            : p2TargetY()
-        ) - p.y,
+    let targetX;
+    let targetY;
 
-        (
-          p === state.p1
-            ? mouse.x
-            : p2TargetX()
-        ) - p.x
-      );
+    if (
+        p === state.p1
+    ) {
+
+        targetX =
+            mouse.x;
+
+        targetY =
+            mouse.y;
+
+    } else {
+
+        targetX =
+            state.p1.x;
+
+        targetY =
+            state.p1.y;
+    }
+
+    const a =
+        Math.atan2(
+            targetY - p.y,
+            targetX - p.x
+        );
 
     const recoil =
-      p.recoil > 0
-        ? -p.recoil * 45
-        : 0;
+        p.recoil > 0
+            ? -p.recoil * 45
+            : 0;
 
     ctx.rotate(a);
 
     ctx.fillStyle =
-      '#161c25';
+        "#161c25";
 
     ctx.fillRect(
-      10 + recoil,
-      -4,
-      20,
-      8
+        10 + recoil,
+        -4,
+        20,
+        8
     );
 
     ctx.restore();
@@ -1292,20 +2945,20 @@
     ctx.beginPath();
 
     ctx.arc(
-      p.x,
-      p.y,
-      p.r,
-      0,
-      Math.PI * 2
+        p.x,
+        p.y,
+        p.r,
+        0,
+        Math.PI * 2
     );
 
     ctx.fillStyle =
-      p.hurt > 0
-        ? '#ffffff'
-        : p.color;
+        p.hurt > 0
+            ? "#ffffff"
+            : p.color;
 
     ctx.shadowColor =
-      p.color;
+        p.color;
 
     ctx.shadowBlur = 18;
 
@@ -1316,111 +2969,150 @@
     ctx.lineWidth = 3;
 
     ctx.strokeStyle =
-      'rgba(255,255,255,.65)';
+        "rgba(255,255,255,.65)";
 
     ctx.stroke();
 
     ctx.restore();
-  }
+}
 
-  function p2TargetX() {
-    return state.p1.x;
-  }
-
-  function p2TargetY() {
-    return state.p1.y;
-  }
-
-  function drawBullets() {
+function drawBullets() {
     for (
-      const b of state.bullets
+        const b of state.bullets
     ) {
-      ctx.save();
 
-      ctx.translate(
-        b.x,
-        b.y
-      );
+        ctx.save();
 
-      ctx.rotate(
-        Math.atan2(
-          b.vy,
-          b.vx
-        )
-      );
-
-      ctx.fillStyle =
-        b.owner === state.p1
-          ? '#9fc6ff'
-          : '#ffb1bb';
-
-      ctx.shadowColor =
-        ctx.fillStyle;
-
-      ctx.shadowBlur = 12;
-
-      ctx.fillRect(
-        -7,
-        -2,
-        14,
-        4
-      );
-
-      ctx.restore();
-    }
-  }
-
-  function drawParticles() {
-    for (
-      const p of state.particles
-    ) {
-      ctx.globalAlpha =
-        clamp(
-          p.life * 3,
-          0,
-          1
+        ctx.translate(
+            b.x,
+            b.y
         );
 
-      ctx.fillStyle =
-        '#f4f7fb';
+        ctx.rotate(
+            Math.atan2(
+                b.vy,
+                b.vx
+            )
+        );
 
-      ctx.fillRect(
-        p.x,
-        p.y,
-        p.size,
-        p.size
-      );
+        ctx.fillStyle =
+            b.owner ===
+            state.p1
+                ? "#9fc6ff"
+                : "#ffb1bb";
+
+        ctx.shadowColor =
+            ctx.fillStyle;
+
+        ctx.shadowBlur = 12;
+
+        ctx.fillRect(
+            -7,
+            -2,
+            14,
+            4
+        );
+
+        ctx.restore();
+    }
+
+    if (
+        state.mode ===
+        "online"
+    ) {
+
+        for (
+            const b of
+            state.remoteBullets
+        ) {
+
+            ctx.save();
+
+            ctx.translate(
+                b.x,
+                b.y
+            );
+
+            ctx.rotate(
+                Math.atan2(
+                    b.vy,
+                    b.vx
+                )
+            );
+
+            ctx.fillStyle =
+                "#ffb1bb";
+
+            ctx.shadowColor =
+                "#ff6d7f";
+
+            ctx.shadowBlur = 12;
+
+            ctx.fillRect(
+                -7,
+                -2,
+                14,
+                4
+            );
+
+            ctx.restore();
+        }
+    }
+}
+
+function drawParticles() {
+    for (
+        const p of
+        state.particles
+    ) {
+
+        ctx.globalAlpha =
+            clamp(
+                p.life * 3,
+                0,
+                1
+            );
+
+        ctx.fillStyle =
+            "#f4f7fb";
+
+        ctx.fillRect(
+            p.x,
+            p.y,
+            p.size,
+            p.size
+        );
     }
 
     ctx.globalAlpha = 1;
-  }
+}
 
-  function drawCrosshair() {
+function drawCrosshair() {
     if (!state.running)
-      return;
+        return;
 
     ctx.save();
 
     ctx.translate(
-      mouse.x,
-      mouse.y
+        mouse.x,
+        mouse.y
     );
 
     ctx.strokeStyle =
-      state.p1.cooldown <= 0
-        ? 'rgba(255,255,255,.8)'
-        : 'rgba(255,255,255,.25)';
+        state.p1.cooldown <= 0
+            ? "rgba(255,255,255,.8)"
+            : "rgba(255,255,255,.25)";
 
     ctx.lineWidth = 1.5;
 
     ctx.beginPath();
 
     ctx.arc(
-      0,
-      0,
-      7,
-      0,
-      Math.PI * 2
+        0,
+        0,
+        7,
+        0,
+        Math.PI * 2
     );
 
     ctx.stroke();
@@ -1442,169 +3134,186 @@
     ctx.stroke();
 
     ctx.restore();
-  }
+}
 
-  function drawHook() {
-    if (!state.hook.active)
-      return;
+function drawHook() {
+    if (
+        !state.hook.active
+    )
+        return;
 
-    const h = state.hook;
+    const h =
+        state.hook;
 
     const life =
-      clamp(
-        1 -
-        h.age / h.life,
-        0,
-        1
-      );
+        clamp(
+            1 -
+            h.age /
+            h.life,
+            0,
+            1
+        );
 
     const dx =
-      h.endX -
-      h.startX;
+        h.endX -
+        h.startX;
 
     const dy =
-      h.endY -
-      h.startY;
+        h.endY -
+        h.startY;
 
     const d =
-      Math.max(
-        1,
-        Math.hypot(dx, dy)
-      );
+        Math.max(
+            1,
+            Math.hypot(
+                dx,
+                dy
+            )
+        );
 
-    const nx = -dy / d;
-    const ny = dx / d;
+    const nx =
+        -dy / d;
+
+    const ny =
+        dx / d;
 
     const sway =
-      Math.sin(h.age * 8) *
-      Math.min(
-        4.5,
-        2.2 +
-        h.power * 1.1
-      );
+        Math.sin(
+            h.age * 8
+        ) *
+        Math.min(
+            4.5,
+            2.2 +
+            h.power * 1.1
+        );
 
     const points = [
-      {
-        x: h.startX,
-        y: h.startY
-      }
+        {
+            x: h.startX,
+            y: h.startY
+        }
     ];
 
     for (
-      const b of h.bend
+        const b of h.bend
     ) {
-      const wave =
-        Math.sin(
-          h.age *
-          (
-            4 +
-            b.wave * 2
-          ) +
-          b.phase
-        ) *
-        sway *
-        Math.sin(
-          Math.PI * b.t
-        );
 
-      points.push({
-        x:
-          h.startX +
-          dx * b.t +
-          nx *
-          (
-            b.offset +
-            wave
-          ),
+        const wave =
+            Math.sin(
+                h.age *
+                (
+                    4 +
+                    b.wave * 2
+                ) +
+                b.phase
+            ) *
+            sway *
+            Math.sin(
+                Math.PI * b.t
+            );
 
-        y:
-          h.startY +
-          dy * b.t +
-          ny *
-          (
-            b.offset +
-            wave
-          )
-      });
+        points.push({
+            x:
+                h.startX +
+                dx * b.t +
+                nx *
+                (
+                    b.offset +
+                    wave
+                ),
+
+            y:
+                h.startY +
+                dy * b.t +
+                ny *
+                (
+                    b.offset +
+                    wave
+                )
+        });
     }
 
     points.push({
-      x: h.endX,
-      y: h.endY
+        x: h.endX,
+        y: h.endY
     });
 
     function traceRope() {
-      ctx.beginPath();
+        ctx.beginPath();
 
-      ctx.moveTo(
-        points[0].x,
-        points[0].y
-      );
+        ctx.moveTo(
+            points[0].x,
+            points[0].y
+        );
 
-      for (
-        let i = 1;
-        i < points.length - 1;
-        i++
-      ) {
-        const current =
-          points[i];
+        for (
+            let i = 1;
+            i < points.length - 1;
+            i++
+        ) {
 
-        const next =
-          points[i + 1];
+            const current =
+                points[i];
 
-        const midX =
-          (
-            current.x +
-            next.x
-          ) * .5;
+            const next =
+                points[i + 1];
 
-        const midY =
-          (
-            current.y +
-            next.y
-          ) * .5;
+            const midX =
+                (
+                    current.x +
+                    next.x
+                ) * .5;
+
+            const midY =
+                (
+                    current.y +
+                    next.y
+                ) * .5;
+
+            ctx.quadraticCurveTo(
+                current.x,
+                current.y,
+                midX,
+                midY
+            );
+        }
+
+        const lastPoint =
+            points[
+                points.length - 1
+            ];
+
+        const prev =
+            points[
+                points.length - 2
+            ];
 
         ctx.quadraticCurveTo(
-          current.x,
-          current.y,
-          midX,
-          midY
+            prev.x,
+            prev.y,
+            lastPoint.x,
+            lastPoint.y
         );
-      }
-
-      const last =
-        points[
-          points.length - 1
-        ];
-
-      const prev =
-        points[
-          points.length - 2
-        ];
-
-      ctx.quadraticCurveTo(
-        prev.x,
-        prev.y,
-        last.x,
-        last.y
-      );
     }
 
     ctx.save();
 
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.lineCap =
+        "round";
+
+    ctx.lineJoin =
+        "round";
 
     ctx.globalAlpha =
-      life * .25;
+        life * .25;
 
     ctx.strokeStyle =
-      '#b8c6dc';
+        "#b8c6dc";
 
     ctx.lineWidth = 8;
 
     ctx.shadowColor =
-      '#a7bfe8';
+        "#a7bfe8";
 
     ctx.shadowBlur = 7;
 
@@ -1612,10 +3321,11 @@
 
     ctx.stroke();
 
-    ctx.globalAlpha = life;
+    ctx.globalAlpha =
+        life;
 
     ctx.strokeStyle =
-      '#d8e1ed';
+        "#d8e1ed";
 
     ctx.lineWidth = 2.6;
 
@@ -1626,627 +3336,378 @@
     ctx.stroke();
 
     ctx.fillStyle =
-      '#f3f6fb';
+        "#f3f6fb";
 
     ctx.shadowBlur = 8;
 
     ctx.beginPath();
 
     ctx.arc(
-      h.endX,
-      h.endY,
-      5.5,
-      0,
-      Math.PI * 2
+        h.endX,
+        h.endY,
+        5.5,
+        0,
+        Math.PI * 2
     );
 
     ctx.fill();
 
     ctx.restore();
-  }
+}
 
-  function render() {
+function render() {
     drawGrid();
-
     drawHook();
-
     drawBullets();
-
     drawParticles();
 
-    drawPlayer(state.p1);
+    drawPlayer(
+        state.p1
+    );
 
-    drawPlayer(state.p2);
+    drawPlayer(
+        state.p2
+    );
 
     drawCrosshair();
 
-    if (state.flash > 0) {
-      ctx.fillStyle =
-        'rgba(255,255,255,' +
-        state.flash * 2 +
-        ')';
+    if (
+        state.flash > 0
+    ) {
 
-      ctx.fillRect(
-        0,
-        0,
-        W,
-        H
-      );
+        ctx.fillStyle =
+            "rgba(255,255,255," +
+            state.flash * 2 +
+            ")";
+
+        ctx.fillRect(
+            0,
+            0,
+            W,
+            H
+        );
     }
-  }
+}
 
-  function canvasPoint(e) {
+function canvasPoint(e) {
     const r =
-      canvas.getBoundingClientRect();
+        canvas.getBoundingClientRect();
 
     return {
-      x:
-        (
-          e.clientX -
-          r.left
-        ) *
-        W /
-        r.width,
+        x:
+            (
+                e.clientX -
+                r.left
+            ) *
+            W /
+            r.width,
 
-      y:
-        (
-          e.clientY -
-          r.top
-        ) *
-        H /
-        r.height
+        y:
+            (
+                e.clientY -
+                r.top
+            ) *
+            H /
+            r.height
     };
-  }
+}
 
-  window.addEventListener(
-    'keydown',
-    e => {
-      const k =
-        e.key.toLowerCase();
-
-      if (
-        [
-          'w',
-          'a',
-          's',
-          'd',
-          'arrowup',
-          'arrowdown',
-          'arrowleft',
-          'arrowright'
-        ].includes(k)
-      ) {
-        e.preventDefault();
-      }
-
-      keys.add(k);
-    }
-  );
-
-  window.addEventListener(
-    'keyup',
-    e => {
-      keys.delete(
-        e.key.toLowerCase()
-      );
-    }
-  );
-
-  canvas.addEventListener(
-    'mousemove',
-    e => {
-      const p =
-        canvasPoint(e);
-
-      mouse.x = p.x;
-      mouse.y = p.y;
-    }
-  );
-
-  canvas.addEventListener(
-    'mousedown',
-    e => {
-      if (e.button === 0) {
-        mouse.down = true;
-
-        const p =
-          canvasPoint(e);
-
-        mouse.x = p.x;
-        mouse.y = p.y;
-
-        shoot(
-          state.p1,
-          mouse.x,
-          mouse.y
-        );
-      }
-
-      if (e.button === 2) {
-        e.preventDefault();
-
-        const p =
-          canvasPoint(e);
-
-        mouse.x = p.x;
-        mouse.y = p.y;
-
-        launchHook(
-          mouse.x,
-          mouse.y
-        );
-      }
-    }
-  );
-
-  window.addEventListener(
-    'mouseup',
-    e => {
-      if (e.button === 0) {
-        mouse.down = false;
-      }
-    }
-  );
-
-  canvas.addEventListener(
-    'mouseleave',
-    () => {
-      mouse.down = false;
-    }
-  );
-
-  canvas.addEventListener(
-    'contextmenu',
-    e => {
-      e.preventDefault();
-    }
-  );
-
-  restartBtn.addEventListener(
-    'click',
-    () => {
-      round++;
-      reset();
-    }
-  );
-
-  const bonusStyle =
-    document.createElement('style');
-
-  bonusStyle.textContent = `
-    #bonusOverlay {
-      position:fixed;
-      inset:0;
-      z-index:9999;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:18px;
-      background:rgba(5,7,11,.76);
-      backdrop-filter:blur(7px);
-    }
-
-    #bonusPanel {
-      width:min(760px, calc(100vw - 28px));
-      border:1px solid #303a4a;
-      border-radius:18px;
-      padding:22px;
-      background:#11161f;
-      box-shadow:0 24px 70px rgba(0,0,0,.52);
-    }
-
-    #bonusTitle {
-      margin:0;
-      text-align:center;
-      font-size:25px;
-      font-weight:900;
-    }
-
-    #bonusSubtitle {
-      margin:6px 0 18px;
-      text-align:center;
-      color:#97a2b1;
-      font-size:13px;
-    }
-
-    #bonusCards {
-      display:grid;
-      grid-template-columns:repeat(3,1fr);
-      gap:12px;
-    }
-
-    .bonusCard {
-      min-height:175px;
-      padding:16px;
-      border:1px solid #334052;
-      border-radius:14px;
-      background:#171d27;
-      color:#eef2f7;
-      text-align:left;
-      cursor:pointer;
-      font:inherit;
-      transition:
-        transform .14s ease,
-        border-color .14s ease,
-        background .14s ease;
-    }
-
-    .bonusCard:hover {
-      transform:translateY(-4px);
-      border-color:#6b7f9d;
-      background:#1d2633;
-    }
-
-    .bonusIcon {
-      width:44px;
-      height:44px;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      border-radius:12px;
-      background:#202a38;
-      font-size:23px;
-      margin-bottom:13px;
-    }
-
-    .bonusName {
-      font-size:16px;
-      font-weight:900;
-      margin-bottom:7px;
-    }
-
-    .bonusDesc {
-      color:#97a2b1;
-      font-size:12px;
-      line-height:1.5;
-    }
-
-    @media (max-width:720px) {
-      #bonusCards {
-        grid-template-columns:1fr;
-      }
-
-      .bonusCard {
-        min-height:0;
-      }
-    }
-  `;
-
-  document.head.appendChild(
-    bonusStyle
-  );
-
-  const bonusOverlay =
-    document.createElement('div');
-
-  bonusOverlay.id =
-    'bonusOverlay';
-
-  bonusOverlay.innerHTML = `
-    <div id="bonusPanel">
-      <h2 id="bonusTitle">
-        ВЫБЕРИ УСИЛИТЕЛЬ
-      </h2>
-
-      <div id="bonusSubtitle">
-        Время остановлено. Выбери один бонус.
-      </div>
-
-      <div id="bonusCards"></div>
-    </div>
-  `;
-
-  document.body.appendChild(
-    bonusOverlay
-  );
-
-  bonusOverlay.style.display =
-    'none';
-
-  document
-    .querySelector(
-      'meta[data-test="bonus-edit"]'
+function update(dt) {
+    if (
+        !state ||
+        !state.running
     )
-    ?.remove();
+        return;
 
-  const bonusCards =
-    document.getElementById(
-      'bonusCards'
-    );
-
-  const bonusState = {
-    nextTime: 20,
-    paused: false,
-    damage: 0,
-    fireCooldown: 1,
-    bulletSpeed: 510
-  };
-
-  const bonusPool = [
-    {
-      name: 'Усиленный урон',
-      icon: '✦',
-      desc:
-        '+10 урона каждой твоей пулей.',
-      apply: () => {
-        bonusState.damage += 10;
-      }
-    },
-
-    {
-      name: 'Быстрая стрельба',
-      icon: '⚡',
-      desc:
-        'Кулдаун твоего пистолета уменьшается на 0.25 сек.',
-      apply: () => {
-        bonusState.fireCooldown =
-          Math.max(
-            .25,
-            bonusState.fireCooldown -
-            .25
-          );
-      }
-    },
-
-    {
-      name: 'Скорость',
-      icon: '➤',
-      desc:
-        '+30 к скорости движения.',
-      apply: () => {
-        state.p1.speed += 30;
-      }
-    },
-
-    {
-      name: 'Ремкомплект',
-      icon: '♥',
-      desc:
-        'Восстанавливает 30 HP прямо сейчас.',
-      apply: () => {
-        state.p1.hp =
-          Math.min(
-            100,
-            state.p1.hp + 30
-          );
-      }
-    },
-
-    {
-      name: 'Манёвренность',
-      icon: '◉',
-      desc:
-        'Радиус игрока уменьшается на 3 — по тебе труднее попасть.',
-      apply: () => {
-        state.p1.r =
-          Math.max(
-            11,
-            state.p1.r - 3
-          );
-      }
-    },
-
-    {
-      name: 'Мощный выстрел',
-      icon: '●',
-      desc:
-        '+120 к скорости полёта твоих пуль.',
-      apply: () => {
-        bonusState.bulletSpeed += 120;
-      }
-    }
-  ];
-
-  const baseReset = reset;
-
-  reset = function() {
-    baseReset();
-
-    bonusState.nextTime = 20;
-    bonusState.paused = false;
-    bonusState.damage = 0;
-    bonusState.fireCooldown = 1;
-    bonusState.bulletSpeed = 510;
-
-    bonusOverlay.style.display =
-      'none';
-  };
-
-  const baseDamage = damage;
-
-  damage = function(
-    target,
-    amount
-  ) {
     if (
-      target === state.p2 &&
-      bonusState.damage > 0
+        state.mode ===
+        "online"
     ) {
-      amount +=
-        bonusState.damage;
-    }
 
-    baseDamage(
-      target,
-      amount
-    );
-  };
+        if (isHost) {
+            state.time =
+                Math.max(
+                    0,
+                    state.time -
+                    dt
+                );
+        }
 
-  const baseShoot = shoot;
+        updatePlayer(dt);
+        updateRemotePlayer(dt);
+        updateHook(dt);
+        updateBullets(dt);
+        updateParticles(dt);
 
-  shoot = function(
-    shooter,
-    targetX,
-    targetY
-  ) {
-    const before =
-      state.bullets.length;
+    } else {
 
-    baseShoot(
-      shooter,
-      targetX,
-      targetY
-    );
-
-    if (
-      shooter === state.p1 &&
-      state.bullets.length >
-      before
-    ) {
-      const bullet =
-        state.bullets[
-          state.bullets.length - 1
-        ];
-
-      const factor =
-        bonusState.bulletSpeed /
-        510;
-
-      bullet.vx *= factor;
-      bullet.vy *= factor;
-
-      shooter.cooldown =
-        bonusState.fireCooldown;
-    }
-  };
-
-  function openBonusChoice() {
-    if (
-      !state.running ||
-      bonusState.paused
-    )
-      return;
-
-    bonusState.paused = true;
-    state.running = false;
-
-    statusEl.textContent =
-      'CHOOSE BONUS';
-
-    bonusCards.innerHTML = '';
-
-    const choices =
-      [...bonusPool]
-        .sort(
-          () =>
-            Math.random() - .5
-        )
-        .slice(0, 3);
-
-    choices.forEach(
-      bonus => {
-        const card =
-          document.createElement(
-            'button'
-          );
-
-        card.className =
-          'bonusCard';
-
-        card.innerHTML =
-          '<div class="bonusIcon">' +
-          bonus.icon +
-          '</div>' +
-
-          '<div class="bonusName">' +
-          bonus.name +
-          '</div>' +
-
-          '<div class="bonusDesc">' +
-          bonus.desc +
-          '</div>';
-
-        card.addEventListener(
-          'click',
-          () => {
-            bonus.apply();
-
-            bonusState.nextTime -= 10;
-
-            bonusState.paused = false;
-            state.running = true;
-
-            statusEl.textContent =
-              'ROUND ' +
-              round;
-
-            bonusOverlay.style.display =
-              'none';
-
-            updateHud();
-          },
-          {
-            once: true
-          }
-        );
-
-        bonusCards.appendChild(
-          card
-        );
-      }
-    );
-
-    bonusOverlay.style.display =
-      'flex';
-  }
-
-  function frame(now) {
-    const dt =
-      Math.min(
-        .033,
-        Math.max(
-          0,
-          (now - last) / 1000
-        )
-      );
-
-    last = now;
-
-    if (state) {
-      if (
-        state.running &&
-        !bonusState.paused
-      ) {
         state.time =
-          Math.max(
-            0,
-            state.time - dt
-          );
-
-        state.flash =
-          Math.max(
-            0,
-            state.flash - dt
-          );
+            Math.max(
+                0,
+                state.time -
+                dt
+            );
 
         updatePlayer(dt);
         updateBot(dt);
         updateHook(dt);
         updateBullets(dt);
         updateParticles(dt);
-
-        checkEnd();
-
-        updateHud();
-      }
-
-      render();
-
-      if (
-        state.running &&
-        !bonusState.paused &&
-        state.time <=
-        bonusState.nextTime &&
-        bonusState.nextTime > 0
-      ) {
-        openBonusChoice();
-      }
     }
 
-    requestAnimationFrame(frame);
-  }
+    state.flash =
+        Math.max(
+            0,
+            state.flash -
+            dt
+        );
 
-  reset();
+    if (
+        !checkEnd()
+    ) {
 
-  requestAnimationFrame(frame);
-})();
+        updateHud();
+
+    }
+}
+
+function frame(now) {
+    const dt =
+        Math.min(
+            (now - last) /
+            1000,
+            .033
+        );
+
+    last =
+        now;
+
+    update(dt);
+
+    if (
+        state
+    ) {
+
+        render();
+
+        sendPlayerState();
+    }
+
+    requestAnimationFrame(
+        frame
+    );
+}
+
+canvas.addEventListener(
+    "mousemove",
+    e => {
+
+        const p =
+            canvasPoint(e);
+
+        mouse.x =
+            p.x;
+
+        mouse.y =
+            p.y;
+    }
+);
+
+canvas.addEventListener(
+    "mousedown",
+    e => {
+
+        if (
+            e.button === 0
+        ) {
+
+            mouse.down =
+                true;
+
+            const p =
+                canvasPoint(e);
+
+            mouse.x =
+                p.x;
+
+            mouse.y =
+                p.y;
+
+            shoot(
+                state.p1,
+                mouse.x,
+                mouse.y
+            );
+        }
+
+        if (
+            e.button === 2
+        ) {
+
+            e.preventDefault();
+
+            const p =
+                canvasPoint(e);
+
+            mouse.x =
+                p.x;
+
+            mouse.y =
+                p.y;
+
+            launchHook(
+                mouse.x,
+                mouse.y
+            );
+        }
+    }
+);
+
+window.addEventListener(
+    "mouseup",
+    e => {
+
+        if (
+            e.button === 0
+        ) {
+
+            mouse.down =
+                false;
+        }
+    }
+);
+
+canvas.addEventListener(
+    "mouseleave",
+    () => {
+
+        mouse.down =
+            false;
+    }
+);
+
+canvas.addEventListener(
+    "contextmenu",
+    e => {
+
+        e.preventDefault();
+    }
+);
+
+window.addEventListener(
+    "keydown",
+    e => {
+
+        const k =
+            e.key.toLowerCase();
+
+        if (
+            [
+                "w",
+                "a",
+                "s",
+                "d",
+                "arrowup",
+                "arrowdown",
+                "arrowleft",
+                "arrowright"
+            ].includes(k)
+        ) {
+
+            e.preventDefault();
+        }
+
+        keys.add(k);
+    }
+);
+
+window.addEventListener(
+    "keyup",
+    e => {
+
+        keys.delete(
+            e.key.toLowerCase()
+        );
+    }
+);
+
+restartBtn.addEventListener(
+    "click",
+    async () => {
+
+        if (
+            state?.mode ===
+            "online"
+        ) {
+
+            if (!isHost) {
+
+                hideLobby();
+
+                overlay.classList.remove(
+                    "show"
+                );
+
+                return;
+            }
+
+            await update(
+                ref(
+                    db,
+                    "rooms/" +
+                    roomCode
+                ),
+                {
+                    status: "playing",
+                    winner: null,
+                    time: 30
+                }
+            );
+
+            state.p1.hp =
+                100;
+
+            state.p2.hp =
+                100;
+
+            state.p1.x =
+                isHost
+                    ? 130
+                    : W - 130;
+
+            state.p1.y =
+                H / 2;
+
+            state.p2.x =
+                isHost
+                    ? W - 130
+                    : 130;
+
+            state.p2.y =
+                H / 2;
+
+            state.running =
+                true;
+
+            updateHud();
+
+            return;
+        }
+
+        reset();
+    }
+);
+
+createLobby();
+
+listenShots();
+
+listenDamageRequests();
+
+reset();
+
+showLobby();
+
+requestAnimationFrame(
+    frame
+);
