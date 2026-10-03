@@ -1,21 +1,35 @@
-let initializeApp;
-let getDatabase;
-let ref;
-let set;
-let get;
-let dbUpdate;
-let onValue;
-let onDisconnect;
-let remove;
+import {
+    initializeApp
+} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
 
-let db = null;
-let firebaseReady = false;
+import {
+    getDatabase,
+    ref,
+    set,
+    get,
+    update as firebaseUpdate,
+    onValue,
+    onDisconnect,
+    remove
+} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyA2wzPsyM6X1XBfbOxUP7JdCrWDyDmB8os",
+    authDomain: "friends-66f85.firebaseapp.com",
+    databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
+    projectId: "friends-66f85",
+    storageBucket: "friends-66f85.firebasestorage.app",
+    messagingSenderId: "841738224372",
+    appId: "1:841738224372:web:92954bc9f16d69b176d4a1"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
 const lobby = document.getElementById("lobby");
-const app = document.getElementById("app");
 
 const createRoomButton = document.getElementById("createRoom");
 const joinRoomButton = document.getElementById("joinRoom");
@@ -68,8 +82,8 @@ let roomCode = null;
 let isHost = false;
 let isBot = false;
 
-let roomListener = null;
-let shotsListener = null;
+let roomUnsubscribe = null;
+let shotsUnsubscribe = null;
 
 let state = null;
 
@@ -77,84 +91,25 @@ let lastSent = 0;
 let lastTimeSync = 0;
 let lastFrame = performance.now();
 
-const mouse = {
-    x: WIDTH / 2,
-    y: HEIGHT / 2,
-    down: false,
-    rightDown: false
-};
-
 const keys = {};
 
-const firebaseConfig = {
-    apiKey: "AIzaSyA2wzPsyM6X1XBfbOxUP7JdCrWDyDmB8os",
-    authDomain: "friends-66f85.firebaseapp.com",
-    databaseURL: "https://friends-66f85-default-rtdb.firebaseio.com",
-    projectId: "friends-66f85",
-    storageBucket: "friends-66f85.firebasestorage.app",
-    messagingSenderId: "841738224372",
-    appId: "1:841738224372:web:92954bc9f16d69b176d4a1"
+const mouse = {
+    x: WIDTH / 2,
+    y: HEIGHT / 2
 };
 
 function setLobbyStatus(text) {
     lobbyStatus.textContent = text;
 }
 
-async function loadFirebase() {
-    try {
-        const firebaseApp = await import(
-            "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js"
-        );
-
-        const firebaseDatabase = await import(
-            "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js"
-        );
-
-        initializeApp = firebaseApp.initializeApp;
-        getDatabase = firebaseDatabase.getDatabase;
-        ref = firebaseDatabase.ref;
-        set = firebaseDatabase.set;
-        get = firebaseDatabase.get;
-        dbUpdate = firebaseDatabase.update;
-        onValue = firebaseDatabase.onValue;
-        onDisconnect = firebaseDatabase.onDisconnect;
-        remove = firebaseDatabase.remove;
-
-        const firebaseAppInstance =
-            initializeApp(firebaseConfig);
-
-        db = getDatabase(firebaseAppInstance);
-
-        firebaseReady = true;
-
-        console.log("Firebase connected");
-
-        setLobbyStatus("");
-    } catch (error) {
-        console.error(
-            "Firebase loading error:",
-            error
-        );
-
-        firebaseReady = false;
-
-        setLobbyStatus(
-            "Firebase не загрузился. BOT доступен."
-        );
-    }
-}
-
 function randomRoomCode() {
-    const chars =
-        "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     let code = "";
 
     for (let i = 0; i < 6; i++) {
         code += chars[
-            Math.floor(
-                Math.random() * chars.length
-            )
+            Math.floor(Math.random() * chars.length)
         ];
     }
 
@@ -172,32 +127,24 @@ function createState() {
         p1: {
             x: 180,
             y: HEIGHT / 2,
-
             vx: 0,
             vy: 0,
-
             hp: 100,
             r: PLAYER_RADIUS,
-
             shootTimer: 0,
             hookTimer: 0,
-
             color: "#4da6ff"
         },
 
         p2: {
             x: WIDTH - 180,
             y: HEIGHT / 2,
-
             vx: 0,
             vy: 0,
-
             hp: 100,
             r: PLAYER_RADIUS,
-
             shootTimer: 0,
             hookTimer: 0,
-
             color: "#ff4d5a"
         },
 
@@ -207,8 +154,7 @@ function createState() {
         hook: {
             active: false,
             x: 0,
-            y: 0,
-            restLength: 260
+            y: 0
         },
 
         remoteId: null
@@ -216,27 +162,17 @@ function createState() {
 }
 
 function startBot() {
-    isBot = true;
-    isHost = true;
+    cleanupListeners();
 
     roomCode = null;
-
-    if (roomListener) {
-        roomListener();
-        roomListener = null;
-    }
-
-    if (shotsListener) {
-        shotsListener();
-        shotsListener = null;
-    }
+    isHost = true;
+    isBot = true;
 
     state = createState();
 
     enemyName.textContent = "BOT";
 
     lobby.classList.add("hidden");
-
     overlay.classList.remove("show");
 
     statusElement.textContent = "FIGHT";
@@ -245,34 +181,19 @@ function startBot() {
 }
 
 async function createRoom() {
-    if (!firebaseReady || !db) {
-        setLobbyStatus(
-            "Firebase ещё загружается..."
-        );
-
-        return;
-    }
+    setLobbyStatus("Создаём комнату...");
 
     isBot = false;
     isHost = true;
 
-    setLobbyStatus(
-        "Создаём комнату..."
-    );
-
     let code = null;
 
-    for (let i = 0; i < 10; i++) {
-        const candidate =
-            randomRoomCode();
+    for (let i = 0; i < 20; i++) {
+        const candidate = randomRoomCode();
 
-        const snapshot =
-            await get(
-                ref(
-                    db,
-                    `rooms/${candidate}`
-                )
-            );
+        const snapshot = await get(
+            ref(db, `rooms/${candidate}`)
+        );
 
         if (!snapshot.exists()) {
             code = candidate;
@@ -281,10 +202,7 @@ async function createRoom() {
     }
 
     if (!code) {
-        setLobbyStatus(
-            "Не удалось создать комнату."
-        );
-
+        setLobbyStatus("Не удалось создать комнату.");
         return;
     }
 
@@ -300,10 +218,7 @@ async function createRoom() {
 
     try {
         await set(
-            ref(
-                db,
-                `rooms/${roomCode}`
-            ),
+            ref(db, `rooms/${roomCode}`),
             {
                 host: playerId,
                 guest: null,
@@ -329,8 +244,7 @@ async function createRoom() {
 
         createdRoom.classList.remove("hidden");
 
-        roomCodeElement.textContent =
-            roomCode;
+        roomCodeElement.textContent = roomCode;
 
         waitingText.textContent =
             "Ждём второго игрока...";
@@ -343,87 +257,56 @@ async function createRoom() {
         listenShots();
 
     } catch (error) {
-        console.error(
-            "Create room error:",
-            error
-        );
-
-        setLobbyStatus(
-            "Ошибка создания комнаты."
-        );
+        console.error(error);
+        setLobbyStatus("Ошибка создания комнаты.");
     }
 }
 
 async function joinRoom() {
-    if (!firebaseReady || !db) {
-        setLobbyStatus(
-            "Firebase ещё загружается..."
-        );
-
-        return;
-    }
-
-    const code =
-        joinCodeInput.value
-            .trim()
-            .toUpperCase();
+    const code = joinCodeInput.value
+        .trim()
+        .toUpperCase();
 
     if (code.length !== 6) {
         setLobbyStatus(
             "Код должен содержать 6 символов."
         );
-
         return;
     }
 
-    setLobbyStatus(
-        "Проверяем комнату..."
+    setLobbyStatus("Проверяем комнату...");
+
+    const roomRef = ref(
+        db,
+        `rooms/${code}`
     );
 
-    const roomRef =
-        ref(
-            db,
-            `rooms/${code}`
-        );
-
     try {
-        const snapshot =
-            await get(roomRef);
+        const snapshot = await get(roomRef);
 
         if (!snapshot.exists()) {
-            setLobbyStatus(
-                "Комната не найдена."
-            );
-
+            setLobbyStatus("Комната не найдена.");
             return;
         }
 
-        const room =
-            snapshot.val();
+        const room = snapshot.val();
 
-        if (
-            room.guest &&
-            room.guest !== playerId
-        ) {
-            setLobbyStatus(
-                "Комната уже заполнена."
-            );
-
+        if (room.host === playerId) {
+            setLobbyStatus("Нельзя войти в свою комнату.");
             return;
         }
 
-        if (
-            room.status === "finished"
-        ) {
-            setLobbyStatus(
-                "Комната уже завершена."
-            );
+        if (room.guest && room.guest !== playerId) {
+            setLobbyStatus("Комната уже заполнена.");
+            return;
+        }
 
+        if (room.status === "finished") {
+            setLobbyStatus("Комната уже завершена.");
             return;
         }
 
         roomCode = code;
-
         isHost = false;
         isBot = false;
 
@@ -435,16 +318,14 @@ async function joinRoom() {
             ready: true
         };
 
-        await dbUpdate(
+        await firebaseUpdate(
             roomRef,
             {
                 guest: playerId,
                 status: "playing",
                 time: ROUND_TIME,
                 winner: null,
-
-                [`players/${playerId}`]:
-                    player
+                [`players/${playerId}`]: player
             }
         );
 
@@ -456,19 +337,14 @@ async function joinRoom() {
         ).remove();
 
         state = createState();
+        state.remoteId = room.host;
 
-        state.remoteId =
-            room.host;
-
-        enemyName.textContent =
-            "OPPONENT";
+        enemyName.textContent = "OPPONENT";
 
         lobby.classList.add("hidden");
-
         overlay.classList.remove("show");
 
-        statusElement.textContent =
-            "FIGHT";
+        statusElement.textContent = "FIGHT";
 
         listenRoom();
         listenShots();
@@ -476,11 +352,7 @@ async function joinRoom() {
         lastFrame = performance.now();
 
     } catch (error) {
-        console.error(
-            "Join room error:",
-            error
-        );
-
+        console.error(error);
         setLobbyStatus(
             "Ошибка входа в комнату."
         );
@@ -488,238 +360,177 @@ async function joinRoom() {
 }
 
 function listenRoom() {
-    if (!db || !roomCode) {
+    if (!roomCode) {
         return;
     }
 
-    if (roomListener) {
-        roomListener();
+    if (roomUnsubscribe) {
+        roomUnsubscribe();
+        roomUnsubscribe = null;
     }
 
-    roomListener =
-        onValue(
-            ref(
-                db,
-                `rooms/${roomCode}`
-            ),
-            snapshot => {
-                if (!snapshot.exists()) {
-                    if (!isBot) {
-                        setLobbyStatus(
-                            "Комната удалена."
-                        );
-                    }
+    roomUnsubscribe = onValue(
+        ref(db, `rooms/${roomCode}`),
+        snapshot => {
+            if (!snapshot.exists()) {
+                if (!isBot) {
+                    setLobbyStatus("Комната удалена.");
+                }
 
+                return;
+            }
+
+            const room = snapshot.val();
+
+            if (!state) {
+                if (room.status !== "playing") {
                     return;
                 }
 
-                const room =
-                    snapshot.val();
+                state = createState();
+            }
 
-                if (!state) {
-                    if (
-                        room.status ===
-                        "playing"
-                    ) {
-                        state =
-                            createState();
-                    } else {
-                        return;
-                    }
-                }
-
-                if (
-                    isHost &&
-                    room.guest
-                ) {
-                    state.remoteId =
-                        room.guest;
-
-                    if (
-                        lobby.classList.contains(
-                            "hidden"
-                        ) === false
-                    ) {
-                        lobby.classList.add(
-                            "hidden"
-                        );
-                    }
-
-                    enemyName.textContent =
-                        "OPPONENT";
-
-                    statusElement.textContent =
-                        "FIGHT";
-                }
-
-                if (
-                    !isHost &&
-                    room.host
-                ) {
-                    state.remoteId =
-                        room.host;
-                }
-
-                const players =
-                    room.players || {};
-
-                const remoteId =
-                    state.remoteId;
-
-                if (
-                    remoteId &&
-                    players[remoteId]
-                ) {
-                    const remote =
-                        players[remoteId];
-
-                    const remotePlayer =
-                        isHost
-                            ? state.p2
-                            : state.p1;
-
-                    remotePlayer.x =
-                        remote.x ??
-                        remotePlayer.x;
-
-                    remotePlayer.y =
-                        remote.y ??
-                        remotePlayer.y;
-
-                    remotePlayer.hp =
-                        remote.hp ??
-                        remotePlayer.hp;
-                }
-
-                if (
-                    typeof room.time ===
-                    "number" &&
-                    !isHost
-                ) {
-                    state.time =
-                        room.time;
-                }
-
-                if (
-                    room.status ===
-                    "waiting"
-                ) {
-                    statusElement.textContent =
-                        "WAITING";
-
-                    waitingText.textContent =
-                        "Ждём второго игрока...";
-                }
-
-                if (
-                    room.status ===
-                    "playing"
-                ) {
-                    statusElement.textContent =
-                        "FIGHT";
-                }
-
-                if (
-                    room.status ===
-                    "finished" &&
-                    !state.gameOver
-                ) {
-                    state.gameOver = true;
-
-                    if (
-                        room.winner ===
-                        playerId
-                    ) {
-                        showResult(
-                            "YOU WIN",
-                            "Ты победил!"
-                        );
-                    } else if (
-                        room.winner
-                    ) {
-                        showResult(
-                            "YOU LOSE",
-                            "Ты проиграл."
-                        );
-                    } else {
-                        showResult(
-                            "DRAW",
-                            "Ничья."
-                        );
-                    }
+            if (room.host) {
+                if (!isHost) {
+                    state.remoteId = room.host;
                 }
             }
-        );
+
+            if (isHost && room.guest) {
+                state.remoteId = room.guest;
+
+                if (!lobby.classList.contains("hidden")) {
+                    lobby.classList.add("hidden");
+                }
+
+                enemyName.textContent = "OPPONENT";
+                statusElement.textContent = "FIGHT";
+            }
+
+            const players = room.players || {};
+
+            if (
+                state.remoteId &&
+                players[state.remoteId]
+            ) {
+                const remote = players[state.remoteId];
+
+                const remotePlayer = isHost
+                    ? state.p2
+                    : state.p1;
+
+                remotePlayer.x =
+                    typeof remote.x === "number"
+                        ? remote.x
+                        : remotePlayer.x;
+
+                remotePlayer.y =
+                    typeof remote.y === "number"
+                        ? remote.y
+                        : remotePlayer.y;
+
+                remotePlayer.hp =
+                    typeof remote.hp === "number"
+                        ? remote.hp
+                        : remotePlayer.hp;
+            }
+
+            if (!isHost && typeof room.time === "number") {
+                state.time = room.time;
+            }
+
+            if (room.status === "waiting") {
+                statusElement.textContent = "WAITING";
+                waitingText.textContent =
+                    "Ждём второго игрока...";
+            }
+
+            if (room.status === "playing") {
+                statusElement.textContent = "FIGHT";
+            }
+
+            if (
+                room.status === "finished" &&
+                !state.gameOver
+            ) {
+                state.gameOver = true;
+
+                if (room.winner === playerId) {
+                    showResult(
+                        "YOU WIN",
+                        "Ты победил!"
+                    );
+                } else if (room.winner) {
+                    showResult(
+                        "YOU LOSE",
+                        "Ты проиграл."
+                    );
+                } else {
+                    showResult(
+                        "DRAW",
+                        "Ничья."
+                    );
+                }
+            }
+        }
+    );
 }
 
 function listenShots() {
-    if (!db || !roomCode) {
+    if (!roomCode) {
         return;
     }
 
-    if (shotsListener) {
-        shotsListener();
+    if (shotsUnsubscribe) {
+        shotsUnsubscribe();
+        shotsUnsubscribe = null;
     }
 
-    shotsListener =
-        onValue(
-            ref(
-                db,
-                `rooms/${roomCode}/shots`
-            ),
-            snapshot => {
-                if (
-                    !state ||
-                    isBot
-                ) {
-                    return;
-                }
-
-                const data =
-                    snapshot.val() || {};
-
-                const now =
-                    Date.now();
-
-                state.remoteBullets =
-                    Object.entries(data)
-                        .map(
-                            ([id, bullet]) => ({
-                                id,
-
-                                x: bullet.x,
-                                y: bullet.y,
-
-                                vx: bullet.vx,
-                                vy: bullet.vy,
-
-                                owner:
-                                    bullet.owner,
-
-                                createdAt:
-                                    bullet.createdAt,
-
-                                life:
-                                    1.6 -
-                                    (
-                                        now -
-                                        bullet.createdAt
-                                    ) / 1000
-                            })
-                        )
-                        .filter(
-                            bullet =>
-                                bullet.life > 0
-                        );
+    shotsUnsubscribe = onValue(
+        ref(db, `rooms/${roomCode}/shots`),
+        snapshot => {
+            if (!state || isBot) {
+                return;
             }
-        );
+
+            const data = snapshot.val() || {};
+            const now = Date.now();
+
+            state.remoteBullets = Object.entries(data)
+                .filter(([, bullet]) => {
+                    return bullet.owner !== playerId;
+                })
+                .map(([id, bullet]) => ({
+                    id,
+                    x: bullet.x,
+                    y: bullet.y,
+                    vx: bullet.vx,
+                    vy: bullet.vy,
+                    owner: bullet.owner,
+                    life:
+                        1.6 -
+                        (now - bullet.createdAt) / 1000
+                }))
+                .filter(bullet => bullet.life > 0);
+        }
+    );
+}
+
+function cleanupListeners() {
+    if (roomUnsubscribe) {
+        roomUnsubscribe();
+        roomUnsubscribe = null;
+    }
+
+    if (shotsUnsubscribe) {
+        shotsUnsubscribe();
+        shotsUnsubscribe = null;
+    }
 }
 
 async function sendPlayerState() {
     if (
         isBot ||
-        !firebaseReady ||
-        !db ||
         !roomCode ||
         !state ||
         state.gameOver
@@ -727,25 +538,20 @@ async function sendPlayerState() {
         return;
     }
 
-    const now =
-        performance.now();
+    const now = performance.now();
 
-    if (
-        now - lastSent <
-        40
-    ) {
+    if (now - lastSent < 40) {
         return;
     }
 
     lastSent = now;
 
-    const player =
-        isHost
-            ? state.p1
-            : state.p2;
+    const player = isHost
+        ? state.p1
+        : state.p2;
 
     try {
-        await dbUpdate(
+        await firebaseUpdate(
             ref(
                 db,
                 `rooms/${roomCode}/players/${playerId}`
@@ -758,10 +564,7 @@ async function sendPlayerState() {
             }
         );
     } catch (error) {
-        console.error(
-            "Player sync error:",
-            error
-        );
+        console.error("Player sync:", error);
     }
 }
 
@@ -769,53 +572,35 @@ async function syncRoomTime() {
     if (
         !isHost ||
         isBot ||
-        !firebaseReady ||
-        !db ||
         !roomCode ||
         !state
     ) {
         return;
     }
 
-    const now =
-        performance.now();
+    const now = performance.now();
 
-    if (
-        now - lastTimeSync <
-        100
-    ) {
+    if (now - lastTimeSync < 100) {
         return;
     }
 
     lastTimeSync = now;
 
     try {
-        await dbUpdate(
-            ref(
-                db,
-                `rooms/${roomCode}`
-            ),
+        await firebaseUpdate(
+            ref(db, `rooms/${roomCode}`),
             {
-                time:
-                    Math.max(
-                        0,
-                        state.time
-                    )
+                time: Math.max(0, state.time)
             }
         );
     } catch (error) {
-        console.error(
-            "Time sync error:",
-            error
-        );
+        console.error("Time sync:", error);
     }
 }
 
 async function sendShot(bullet) {
     if (
         isBot ||
-        !firebaseReady ||
-        !db ||
         !roomCode
     ) {
         return;
@@ -826,79 +611,47 @@ async function sendShot(bullet) {
             .toString(36)
             .slice(2)}`;
 
+    const shotRef = ref(
+        db,
+        `rooms/${roomCode}/shots/${id}`
+    );
+
     try {
         await set(
-            ref(
-                db,
-                `rooms/${roomCode}/shots/${id}`
-            ),
+            shotRef,
             {
                 x: bullet.x,
                 y: bullet.y,
-
                 vx: bullet.vx,
                 vy: bullet.vy,
-
                 owner: playerId,
-
                 createdAt: Date.now()
             }
         );
 
-        setTimeout(
-            () => {
-                if (
-                    db &&
-                    roomCode
-                ) {
-                    remove(
-                        ref(
-                            db,
-                            `rooms/${roomCode}/shots/${id}`
-                        )
-                    ).catch(() => {});
-                }
-            },
-            1700
-        );
+        setTimeout(() => {
+            remove(shotRef).catch(() => {});
+        }, 1600);
 
     } catch (error) {
-        console.error(
-            "Shot sync error:",
-            error
-        );
+        console.error("Shot sync:", error);
     }
 }
 
-function shoot(
-    player,
-    targetX,
-    targetY
-) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
+function shoot(player, targetX, targetY) {
+    if (!state || state.gameOver) {
         return;
     }
 
-    if (
-        player.shootTimer > 0
-    ) {
+    if (player.shootTimer > 0) {
         return;
     }
 
-    const dx =
-        targetX - player.x;
+    const dx = targetX - player.x;
+    const dy = targetY - player.y;
 
-    const dy =
-        targetY - player.y;
-
-    const length =
-        Math.hypot(
-            dx,
-            dy
-        ) || 1;
+    const distance =
+        Math.hypot(dx, dy) || 1;
 
     const bullet = {
         x: player.x,
@@ -906,12 +659,12 @@ function shoot(
 
         vx:
             dx /
-            length *
+            distance *
             BULLET_SPEED,
 
         vy:
             dy /
-            length *
+            distance *
             BULLET_SPEED,
 
         life: 1.6,
@@ -922,212 +675,205 @@ function shoot(
                 : 2
     };
 
-    state.bullets.push(
-        bullet
-    );
+    state.bullets.push(bullet);
 
-    player.shootTimer =
-        SHOOT_COOLDOWN;
+    player.shootTimer = SHOOT_COOLDOWN;
 
-    const isLocal =
+    const local =
         isBot
             ? player === state.p1
-            : (
-                isHost
-                    ? player === state.p1
-                    : player === state.p2
-            );
+            : isHost
+                ? player === state.p1
+                : player === state.p2;
 
     if (
         state.mode === "online" &&
-        isLocal
+        local
     ) {
         sendShot(bullet);
     }
 }
 
-function useHook(
-    player,
-    targetX,
-    targetY
-) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
+function useHook(player, targetX, targetY) {
+    if (!state || state.gameOver) {
         return;
     }
 
-    if (
-        player.hookTimer > 0
-    ) {
+    if (player.hookTimer > 0) {
         return;
     }
 
-    const dx =
-        targetX - player.x;
-
-    const dy =
-        targetY - player.y;
+    const dx = targetX - player.x;
+    const dy = targetY - player.y;
 
     const distance =
-        Math.hypot(
-            dx,
-            dy
-        );
+        Math.hypot(dx, dy);
 
     if (
         distance <= 0 ||
         distance > 500
     ) {
-        player.hookTimer =
-            HOOK_COOLDOWN;
-
+        player.hookTimer = HOOK_COOLDOWN;
         return;
     }
 
     state.hook.active = true;
 
-    state.hook.x =
-        player.x +
-        dx / distance *
-        distance;
+    state.hook.x = targetX;
+    state.hook.y = targetY;
 
-    state.hook.y =
-        player.y +
-        dy / distance *
-        distance;
+    player.hookTimer = HOOK_COOLDOWN;
 
-    state.hook.restLength =
-        Math.max(
-            120,
-            Math.min(
-                500,
-                distance
-            )
-        );
+    const hookState = state;
 
-    player.hookTimer =
-        HOOK_COOLDOWN;
-
-    setTimeout(
-        () => {
-            if (state) {
-                state.hook.active =
-                    false;
-            }
-        },
-        300
-    );
+    setTimeout(() => {
+        if (state === hookState) {
+            state.hook.active = false;
+        }
+    }, 300);
 }
 
-function updatePlayer(
-    player,
-    dt,
-    local
-) {
+function updatePlayer(player, dt, local) {
     let dx = 0;
     let dy = 0;
 
     if (local) {
-        if (
-            keys.w ||
-            keys.ArrowUp
-        ) {
+        if (keys.w || keys.W || keys.ArrowUp) {
             dy -= 1;
         }
 
-        if (
-            keys.s ||
-            keys.ArrowDown
-        ) {
+        if (keys.s || keys.S || keys.ArrowDown) {
             dy += 1;
         }
 
-        if (
-            keys.a ||
-            keys.ArrowLeft
-        ) {
+        if (keys.a || keys.A || keys.ArrowLeft) {
             dx -= 1;
         }
 
-        if (
-            keys.d ||
-            keys.ArrowRight
-        ) {
+        if (keys.d || keys.D || keys.ArrowRight) {
             dx += 1;
         }
     }
 
-    if (
-        dx !== 0 ||
-        dy !== 0
-    ) {
-        const length =
-            Math.hypot(
-                dx,
-                dy
-            );
+    if (dx !== 0 || dy !== 0) {
+        const distance =
+            Math.hypot(dx, dy);
 
-        dx /= length;
-        dy /= length;
+        dx /= distance;
+        dy /= distance;
 
-        player.vx =
-            dx * PLAYER_SPEED;
-
-        player.vy =
-            dy * PLAYER_SPEED;
+        player.vx = dx * PLAYER_SPEED;
+        player.vy = dy * PLAYER_SPEED;
     } else {
-        player.vx *=
-            Math.pow(
-                0.001,
-                dt
-            );
+        const friction =
+            Math.pow(0.001, dt);
 
-        player.vy *=
-            Math.pow(
-                0.001,
-                dt
-            );
+        player.vx *= friction;
+        player.vy *= friction;
     }
 
-    player.x +=
-        player.vx * dt;
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
 
-    player.y +=
-        player.vy * dt;
+    player.x = Math.max(
+        player.r,
+        Math.min(
+            WIDTH - player.r,
+            player.x
+        )
+    );
 
-    player.x =
-        Math.max(
-            player.r,
-            Math.min(
-                WIDTH -
-                player.r,
-                player.x
-            )
+    player.y = Math.max(
+        player.r,
+        Math.min(
+            HEIGHT - player.r,
+            player.y
+        )
+    );
+
+    player.shootTimer = Math.max(
+        0,
+        player.shootTimer - dt
+    );
+
+    player.hookTimer = Math.max(
+        0,
+        player.hookTimer - dt
+    );
+}
+
+function updateBot(dt) {
+    if (
+        !state ||
+        !isBot ||
+        state.gameOver
+    ) {
+        return;
+    }
+
+    const bot = state.p2;
+    const player = state.p1;
+
+    const dx = player.x - bot.x;
+    const dy = player.y - bot.y;
+
+    const distance =
+        Math.hypot(dx, dy) || 1;
+
+    if (distance > 270) {
+        bot.vx =
+            dx / distance *
+            PLAYER_SPEED *
+            0.55;
+
+        bot.vy =
+            dy / distance *
+            PLAYER_SPEED *
+            0.55;
+    } else {
+        bot.vx *= 0.9;
+        bot.vy *= 0.9;
+    }
+
+    bot.x += bot.vx * dt;
+    bot.y += bot.vy * dt;
+
+    bot.x = Math.max(
+        bot.r,
+        Math.min(
+            WIDTH - bot.r,
+            bot.x
+        )
+    );
+
+    bot.y = Math.max(
+        bot.r,
+        Math.min(
+            HEIGHT - bot.r,
+            bot.y
+        )
+    );
+
+    bot.shootTimer = Math.max(
+        0,
+        bot.shootTimer - dt
+    );
+
+    bot.hookTimer = Math.max(
+        0,
+        bot.hookTimer - dt
+    );
+
+    if (
+        bot.shootTimer <= 0 &&
+        distance < 700
+    ) {
+        shoot(
+            bot,
+            player.x,
+            player.y
         );
-
-    player.y =
-        Math.max(
-            player.r,
-            Math.min(
-                HEIGHT -
-                player.r,
-                player.y
-            )
-        );
-
-    player.shootTimer =
-        Math.max(
-            0,
-            player.shootTimer - dt
-        );
-
-    player.hookTimer =
-        Math.max(
-            0,
-            player.hookTimer - dt
-        );
+    }
 }
 
 function updateBullets(dt) {
@@ -1136,36 +882,24 @@ function updateBullets(dt) {
     }
 
     for (
-        let i =
-            state.bullets.length - 1;
+        let i = state.bullets.length - 1;
         i >= 0;
         i--
     ) {
-        const bullet =
-            state.bullets[i];
+        const bullet = state.bullets[i];
 
-        bullet.x +=
-            bullet.vx * dt;
-
-        bullet.y +=
-            bullet.vy * dt;
-
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
         bullet.life -= dt;
 
         if (
             bullet.life <= 0 ||
-            bullet.x < -30 ||
-            bullet.x >
-                WIDTH + 30 ||
-            bullet.y < -30 ||
-            bullet.y >
-                HEIGHT + 30
+            bullet.x < -50 ||
+            bullet.x > WIDTH + 50 ||
+            bullet.y < -50 ||
+            bullet.y > HEIGHT + 50
         ) {
-            state.bullets.splice(
-                i,
-                1
-            );
-
+            state.bullets.splice(i, 1);
             continue;
         }
 
@@ -1176,78 +910,48 @@ function updateBullets(dt) {
 
         const distance =
             Math.hypot(
-                bullet.x -
-                    target.x,
-                bullet.y -
-                    target.y
+                bullet.x - target.x,
+                bullet.y - target.y
             );
 
         if (
             distance <
-            target.r +
-            BULLET_RADIUS
+            target.r + BULLET_RADIUS
         ) {
             if (
-                state.mode ===
-                    "online" &&
+                state.mode === "online" &&
                 !isHost
             ) {
-                if (
-                    target ===
-                    state.p2
-                ) {
-                    state.bullets.splice(
-                        i,
-                        1
-                    );
-
-                    continue;
-                }
+                state.bullets.splice(i, 1);
+                continue;
             }
 
-            damage(
-                target,
-                DAMAGE
-            );
+            damage(target, DAMAGE);
 
-            state.bullets.splice(
-                i,
-                1
-            );
+            state.bullets.splice(i, 1);
         }
     }
 
     for (
-        let i =
-            state.remoteBullets.length - 1;
+        let i = state.remoteBullets.length - 1;
         i >= 0;
         i--
     ) {
         const bullet =
             state.remoteBullets[i];
 
-        bullet.x +=
-            bullet.vx * dt;
-
-        bullet.y +=
-            bullet.vy * dt;
-
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
         bullet.life -= dt;
 
         if (
             bullet.life <= 0 ||
-            bullet.x < -30 ||
-            bullet.x >
-                WIDTH + 30 ||
-            bullet.y < -30 ||
-            bullet.y >
-                HEIGHT + 30
+            bullet.x < -50 ||
+            bullet.x > WIDTH + 50 ||
+            bullet.y < -50 ||
+            bullet.y > HEIGHT + 50
         ) {
-            state.remoteBullets.splice(
-                i,
-                1
-            );
-
+            state.remoteBullets.splice(i, 1);
             continue;
         }
 
@@ -1258,40 +962,27 @@ function updateBullets(dt) {
 
         const distance =
             Math.hypot(
-                bullet.x -
-                    localPlayer.x,
-                bullet.y -
-                    localPlayer.y
+                bullet.x - localPlayer.x,
+                bullet.y - localPlayer.y
             );
 
         if (
-            bullet.owner !==
-                playerId &&
             distance <
-                localPlayer.r +
-                BULLET_RADIUS
+            localPlayer.r + BULLET_RADIUS
         ) {
-            if (
-                isHost
-            ) {
+            if (isHost) {
                 damage(
                     localPlayer,
                     DAMAGE
                 );
             }
 
-            state.remoteBullets.splice(
-                i,
-                1
-            );
+            state.remoteBullets.splice(i, 1);
         }
     }
 }
 
-function damage(
-    player,
-    amount
-) {
+function damage(player, amount) {
     if (
         !state ||
         state.gameOver
@@ -1300,55 +991,48 @@ function damage(
     }
 
     if (
-        state.mode ===
-            "online" &&
+        state.mode === "online" &&
         !isHost
     ) {
         return;
     }
 
-    player.hp =
-        Math.max(
-            0,
-            player.hp - amount
-        );
+    player.hp = Math.max(
+        0,
+        player.hp - amount
+    );
 
     if (
-        state.mode ===
-        "online"
+        state.mode === "online"
     ) {
         const localPlayer =
             isHost
                 ? state.p1
                 : state.p2;
 
-        dbUpdate(
+        firebaseUpdate(
             ref(
                 db,
                 `rooms/${roomCode}/players/${playerId}`
             ),
             {
-                hp:
-                    localPlayer.hp
+                hp: localPlayer.hp
             }
         ).catch(() => {});
 
-        if (
-            state.remoteId
-        ) {
+        if (state.remoteId) {
             const remotePlayer =
                 isHost
                     ? state.p2
                     : state.p1;
 
-            dbUpdate(
+            firebaseUpdate(
                 ref(
                     db,
                     `rooms/${roomCode}/players/${state.remoteId}`
                 ),
                 {
-                    hp:
-                        remotePlayer.hp
+                    hp: remotePlayer.hp
                 }
             ).catch(() => {});
         }
@@ -1393,23 +1077,14 @@ function checkEnd() {
             state.time <= 0 &&
             winner === null
         ) {
-            if (
-                state.p1.hp >
-                state.p2.hp
-            ) {
+            if (state.p1.hp > state.p2.hp) {
                 winner = 1;
-            } else if (
-                state.p2.hp >
-                state.p1.hp
-            ) {
+            } else if (state.p2.hp > state.p1.hp) {
                 winner = 2;
             }
         }
 
-        if (
-            state.mode ===
-                "online"
-        ) {
+        if (state.mode === "online") {
             if (isHost) {
                 finishOnline(
                     winner === 1
@@ -1433,13 +1108,10 @@ function checkEnd() {
     }
 }
 
-async function finishOnline(
-    winnerId
-) {
+async function finishOnline(winnerId) {
     if (
         !state ||
         state.gameOver ||
-        !db ||
         !roomCode
     ) {
         return;
@@ -1448,35 +1120,21 @@ async function finishOnline(
     state.gameOver = true;
 
     try {
-        await dbUpdate(
-            ref(
-                db,
-                `rooms/${roomCode}`
-            ),
+        await firebaseUpdate(
+            ref(db, `rooms/${roomCode}`),
             {
                 status: "finished",
-                winner:
-                    winnerId || null,
-                time:
-                    Math.max(
-                        0,
-                        state.time
-                    )
+                winner: winnerId || null,
+                time: Math.max(0, state.time)
             }
         );
     } catch (error) {
-        console.error(
-            "Finish error:",
-            error
-        );
-
+        console.error("Finish error:", error);
         state.gameOver = false;
     }
 }
 
-function finishLocal(
-    result
-) {
+function finishLocal(result) {
     if (
         !state ||
         state.gameOver
@@ -1486,16 +1144,12 @@ function finishLocal(
 
     state.gameOver = true;
 
-    if (
-        result === "YOU WIN"
-    ) {
+    if (result === "YOU WIN") {
         showResult(
             "YOU WIN",
             "Ты победил!"
         );
-    } else if (
-        result === "YOU LOSE"
-    ) {
+    } else if (result === "YOU LOSE") {
         showResult(
             "YOU LOSE",
             "Ты проиграл."
@@ -1508,22 +1162,13 @@ function finishLocal(
     }
 }
 
-function showResult(
-    title,
-    text
-) {
-    resultTitle.textContent =
-        title;
+function showResult(title, text) {
+    resultTitle.textContent = title;
+    resultText.textContent = text;
 
-    resultText.textContent =
-        text;
+    overlay.classList.add("show");
 
-    overlay.classList.add(
-        "show"
-    );
-
-    statusElement.textContent =
-        "FINISHED";
+    statusElement.textContent = "FINISHED";
 }
 
 async function restartGame() {
@@ -1533,68 +1178,40 @@ async function restartGame() {
 
     if (isBot) {
         startBot();
-
         return;
     }
 
-    if (!isHost) {
-        return;
-    }
-
-    if (
-        !db ||
-        !roomCode
-    ) {
+    if (!isHost || !roomCode) {
         return;
     }
 
     try {
-        const snapshot =
-            await get(
-                ref(
-                    db,
-                    `rooms/${roomCode}`
-                )
-            );
+        const snapshot = await get(
+            ref(db, `rooms/${roomCode}`)
+        );
 
         if (!snapshot.exists()) {
             backToLobby();
-
             return;
         }
 
-        const room =
-            snapshot.val();
+        const room = snapshot.val();
 
         if (!room.guest) {
             setLobbyStatus(
                 "Второй игрок вышел."
             );
-
             return;
         }
 
-        state =
-            createState();
+        state = createState();
+        state.remoteId = room.guest;
 
-        state.mode =
-            "online";
+        overlay.classList.remove("show");
+        statusElement.textContent = "FIGHT";
 
-        state.remoteId =
-            room.guest;
-
-        overlay.classList.remove(
-            "show"
-        );
-
-        statusElement.textContent =
-            "FIGHT";
-
-        await dbUpdate(
-            ref(
-                db,
-                `rooms/${roomCode}`
-            ),
+        await firebaseUpdate(
+            ref(db, `rooms/${roomCode}`),
             {
                 status: "playing",
                 time: ROUND_TIME,
@@ -1609,13 +1226,10 @@ async function restartGame() {
                 },
 
                 [`players/${room.guest}`]: {
-                    x:
-                        WIDTH - 180,
-                    y:
-                        HEIGHT / 2,
+                    x: WIDTH - 180,
+                    y: HEIGHT / 2,
                     hp: 100,
-                    r:
-                        PLAYER_RADIUS,
+                    r: PLAYER_RADIUS,
                     ready: true
                 },
 
@@ -1624,206 +1238,69 @@ async function restartGame() {
         );
 
     } catch (error) {
-        console.error(
-            "Restart error:",
-            error
-        );
+        console.error("Restart error:", error);
     }
 }
 
 function backToLobby() {
-    if (
-        roomListener
-    ) {
-        roomListener();
-        roomListener = null;
-    }
+    const oldRoom = roomCode;
 
-    if (
-        shotsListener
-    ) {
-        shotsListener();
-        shotsListener = null;
-    }
+    cleanupListeners();
 
-    if (
-        db &&
-        roomCode
-    ) {
+    if (oldRoom) {
         remove(
             ref(
                 db,
-                `rooms/${roomCode}/players/${playerId}`
+                `rooms/${oldRoom}/players/${playerId}`
             )
         ).catch(() => {});
     }
 
     state = null;
-
     roomCode = null;
-
     isBot = false;
     isHost = false;
 
-    overlay.classList.remove(
-        "show"
-    );
+    overlay.classList.remove("show");
 
-    createdRoom.classList.add(
-        "hidden"
-    );
+    createdRoom.classList.add("hidden");
 
     joinCodeInput.value = "";
 
-    roomCodeElement.textContent =
-        "------";
+    roomCodeElement.textContent = "------";
 
     waitingText.textContent =
         "Ждём второго игрока...";
 
-    statusElement.textContent =
-        "WAITING";
+    statusElement.textContent = "WAITING";
 
-    timeElement.textContent =
-        "30.0";
+    timeElement.textContent = "30.0";
 
-    p1HpText.textContent =
-        "100";
+    p1HpText.textContent = "100";
+    p2HpText.textContent = "100";
 
-    p2HpText.textContent =
-        "100";
+    p1Health.style.width = "100%";
+    p2Health.style.width = "100%";
 
-    p1Health.style.width =
-        "100%";
-
-    p2Health.style.width =
-        "100%";
-
-    enemyName.textContent =
-        "OPPONENT";
+    enemyName.textContent = "OPPONENT";
 
     setLobbyStatus("");
 
-    lobby.classList.remove(
-        "hidden"
+    lobby.classList.remove("hidden");
+}
+
+function gameUpdate(dt) {
+    if (
+        !state ||
+        state.gameOver
+    ) {
+        return;
+    }
+
+    state.time = Math.max(
+        0,
+        state.time - dt
     );
-}
-
-function updateBot(dt) {
-    if (
-        !state ||
-        !isBot ||
-        state.gameOver
-    ) {
-        return;
-    }
-
-    const bot =
-        state.p2;
-
-    const player =
-        state.p1;
-
-    const dx =
-        player.x - bot.x;
-
-    const dy =
-        player.y - bot.y;
-
-    const distance =
-        Math.hypot(
-            dx,
-            dy
-        );
-
-    if (
-        distance > 260
-    ) {
-        bot.vx =
-            dx /
-            Math.max(
-                1,
-                distance
-            ) *
-            PLAYER_SPEED *
-            0.55;
-
-        bot.vy =
-            dy /
-            Math.max(
-                1,
-                distance
-            ) *
-            PLAYER_SPEED *
-            0.55;
-    } else {
-        bot.vx *= 0.9;
-        bot.vy *= 0.9;
-    }
-
-    bot.x +=
-        bot.vx * dt;
-
-    bot.y +=
-        bot.vy * dt;
-
-    bot.x =
-        Math.max(
-            bot.r,
-            Math.min(
-                WIDTH -
-                    bot.r,
-                bot.x
-            )
-        );
-
-    bot.y =
-        Math.max(
-            bot.r,
-            Math.min(
-                HEIGHT -
-                    bot.r,
-                bot.y
-            )
-        );
-
-    bot.shootTimer =
-        Math.max(
-            0,
-            bot.shootTimer - dt
-        );
-
-    bot.hookTimer =
-        Math.max(
-            0,
-            bot.hookTimer - dt
-        );
-
-    if (
-        bot.shootTimer <= 0 &&
-        distance < 700
-    ) {
-        shoot(
-            bot,
-            player.x,
-            player.y
-        );
-    }
-}
-
-function update(dt) {
-    if (
-        !state ||
-        state.gameOver
-    ) {
-        return;
-    }
-
-    state.time =
-        Math.max(
-            0,
-            state.time - dt
-        );
 
     const localPlayer =
         isBot || isHost
@@ -1842,10 +1319,7 @@ function update(dt) {
 
     updateBullets(dt);
 
-    if (
-        state.mode ===
-        "online"
-    ) {
+    if (state.mode === "online") {
         sendPlayerState();
 
         if (isHost) {
@@ -1857,8 +1331,7 @@ function update(dt) {
 }
 
 function drawBackground() {
-    ctx.fillStyle =
-        "#080a0f";
+    ctx.fillStyle = "#080a0f";
 
     ctx.fillRect(
         0,
@@ -1868,54 +1341,34 @@ function drawBackground() {
     );
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.035)";
+        "rgba(255,255,255,.035)";
 
     ctx.lineWidth = 1;
-
-    const grid = 40;
 
     for (
         let x = 0;
         x <= WIDTH;
-        x += grid
+        x += 40
     ) {
         ctx.beginPath();
-
-        ctx.moveTo(
-            x,
-            0
-        );
-
-        ctx.lineTo(
-            x,
-            HEIGHT
-        );
-
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, HEIGHT);
         ctx.stroke();
     }
 
     for (
         let y = 0;
         y <= HEIGHT;
-        y += grid
+        y += 40
     ) {
         ctx.beginPath();
-
-        ctx.moveTo(
-            0,
-            y
-        );
-
-        ctx.lineTo(
-            WIDTH,
-            y
-        );
-
+        ctx.moveTo(0, y);
+        ctx.lineTo(WIDTH, y);
         ctx.stroke();
     }
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.12)";
+        "rgba(255,255,255,.12)";
 
     ctx.strokeRect(
         1,
@@ -1925,9 +1378,7 @@ function drawBackground() {
     );
 }
 
-function drawPlayer(
-    player
-) {
+function drawPlayer(player) {
     ctx.beginPath();
 
     ctx.arc(
@@ -1938,9 +1389,7 @@ function drawPlayer(
         Math.PI * 2
     );
 
-    ctx.fillStyle =
-        player.color;
-
+    ctx.fillStyle = player.color;
     ctx.fill();
 
     ctx.beginPath();
@@ -1954,10 +1403,9 @@ function drawPlayer(
     );
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.12)";
+        "rgba(255,255,255,.12)";
 
     ctx.lineWidth = 1;
-
     ctx.stroke();
 
     ctx.beginPath();
@@ -1970,9 +1418,7 @@ function drawPlayer(
         Math.PI * 2
     );
 
-    ctx.fillStyle =
-        "#ffffff";
-
+    ctx.fillStyle = "#fff";
     ctx.fill();
 }
 
@@ -1981,10 +1427,7 @@ function drawBullets() {
         return;
     }
 
-    for (
-        const bullet of
-        state.bullets
-    ) {
+    for (const bullet of state.bullets) {
         ctx.beginPath();
 
         ctx.arc(
@@ -2003,10 +1446,7 @@ function drawBullets() {
         ctx.fill();
     }
 
-    for (
-        const bullet of
-        state.remoteBullets
-    ) {
+    for (const bullet of state.remoteBullets) {
         ctx.beginPath();
 
         ctx.arc(
@@ -2017,11 +1457,7 @@ function drawBullets() {
             Math.PI * 2
         );
 
-        ctx.fillStyle =
-            bullet.owner === playerId
-                ? "#65b5ff"
-                : "#ff626d";
-
+        ctx.fillStyle = "#ff626d";
         ctx.fill();
     }
 }
@@ -2052,10 +1488,9 @@ function drawHook() {
     );
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.65)";
+        "rgba(255,255,255,.65)";
 
     ctx.lineWidth = 2;
-
     ctx.stroke();
 
     ctx.beginPath();
@@ -2068,9 +1503,7 @@ function drawHook() {
         Math.PI * 2
     );
 
-    ctx.strokeStyle =
-        "#ffffff";
-
+    ctx.strokeStyle = "#fff";
     ctx.stroke();
 }
 
@@ -2090,20 +1523,17 @@ function drawAim() {
     const dy =
         mouse.y - player.y;
 
-    const length =
-        Math.hypot(
-            dx,
-            dy
-        ) || 1;
+    const distance =
+        Math.hypot(dx, dy) || 1;
 
     const endX =
         player.x +
-        dx / length *
+        dx / distance *
         45;
 
     const endY =
         player.y +
-        dy / length *
+        dy / distance *
         45;
 
     ctx.beginPath();
@@ -2119,10 +1549,9 @@ function drawAim() {
     );
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.18)";
+        "rgba(255,255,255,.18)";
 
     ctx.lineWidth = 2;
-
     ctx.stroke();
 }
 
@@ -2136,13 +1565,8 @@ function render() {
     drawHook();
     drawBullets();
 
-    drawPlayer(
-        state.p1
-    );
-
-    drawPlayer(
-        state.p2
-    );
+    drawPlayer(state.p1);
+    drawPlayer(state.p2);
 
     drawAim();
 
@@ -2187,7 +1611,7 @@ function frame(now) {
 
     lastFrame = now;
 
-    update(dt);
+    gameUpdate(dt);
     render();
 
     requestAnimationFrame(frame);
@@ -2200,14 +1624,12 @@ canvas.addEventListener(
             canvas.getBoundingClientRect();
 
         mouse.x =
-            (event.clientX -
-                rect.left) *
+            (event.clientX - rect.left) *
             WIDTH /
             rect.width;
 
         mouse.y =
-            (event.clientY -
-                rect.top) *
+            (event.clientY - rect.top) *
             HEIGHT /
             rect.height;
     }
@@ -2216,10 +1638,7 @@ canvas.addEventListener(
 canvas.addEventListener(
     "mousedown",
     event => {
-        if (
-            !state ||
-            state.gameOver
-        ) {
+        if (!state || state.gameOver) {
             return;
         }
 
@@ -2228,11 +1647,7 @@ canvas.addEventListener(
                 ? state.p1
                 : state.p2;
 
-        if (
-            event.button === 0
-        ) {
-            mouse.down = true;
-
+        if (event.button === 0) {
             shoot(
                 player,
                 mouse.x,
@@ -2240,11 +1655,7 @@ canvas.addEventListener(
             );
         }
 
-        if (
-            event.button === 2
-        ) {
-            mouse.rightDown = true;
-
+        if (event.button === 2) {
             useHook(
                 player,
                 mouse.x,
@@ -2262,23 +1673,6 @@ canvas.addEventListener(
 );
 
 window.addEventListener(
-    "mouseup",
-    event => {
-        if (
-            event.button === 0
-        ) {
-            mouse.down = false;
-        }
-
-        if (
-            event.button === 2
-        ) {
-            mouse.rightDown = false;
-        }
-    }
-);
-
-window.addEventListener(
     "keydown",
     event => {
         keys[event.key] = true;
@@ -2286,17 +1680,19 @@ window.addEventListener(
         if (
             [
                 "w",
+                "W",
                 "a",
+                "A",
                 "s",
+                "S",
                 "d",
+                "D",
                 "ArrowUp",
                 "ArrowDown",
                 "ArrowLeft",
                 "ArrowRight",
                 " "
-            ].includes(
-                event.key
-            )
+            ].includes(event.key)
         ) {
             event.preventDefault();
         }
@@ -2312,23 +1708,17 @@ window.addEventListener(
 
 createRoomButton.addEventListener(
     "click",
-    () => {
-        createRoom();
-    }
+    createRoom
 );
 
 joinRoomButton.addEventListener(
     "click",
-    () => {
-        joinRoom();
-    }
+    joinRoom
 );
 
 playBotButton.addEventListener(
     "click",
-    () => {
-        startBot();
-    }
+    startBot
 );
 
 copyCodeButton.addEventListener(
@@ -2362,20 +1752,14 @@ joinCodeInput.addEventListener(
                     /[^A-Z0-9]/g,
                     ""
                 )
-                .slice(
-                    0,
-                    6
-                );
+                .slice(0, 6);
     }
 );
 
 joinCodeInput.addEventListener(
     "keydown",
     event => {
-        if (
-            event.key ===
-            "Enter"
-        ) {
+        if (event.key === "Enter") {
             joinRoom();
         }
     }
@@ -2383,25 +1767,18 @@ joinCodeInput.addEventListener(
 
 restartButton.addEventListener(
     "click",
-    () => {
-        restartGame();
-    }
+    restartGame
 );
 
 backToLobbyButton.addEventListener(
     "click",
-    () => {
-        backToLobby();
-    }
+    backToLobby
 );
 
 window.addEventListener(
     "beforeunload",
     () => {
-        if (
-            db &&
-            roomCode
-        ) {
+        if (roomCode) {
             remove(
                 ref(
                     db,
@@ -2412,8 +1789,6 @@ window.addEventListener(
     }
 );
 
-loadFirebase();
+requestAnimationFrame(frame);
 
-requestAnimationFrame(
-    frame
-);
+console.log("Duel Arena loaded");
